@@ -1,7 +1,7 @@
 <h1 align="center"> EroMe Media Downloader </h1>
 
 <h2 align="center">
-<img src="https://images2.imgbox.com/5c/24/MDTKXMAN_o.png" width="600">
+<img src="https://images2.imgbox.com/af/49/N2JCBN2D_o.png" width="600">
 </h2>
 
 <h3 align="center"> <a href="https://github.com/Sahampath">
