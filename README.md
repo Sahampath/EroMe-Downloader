@@ -1,7 +1,7 @@
 <h1 align="center"> EroMe Media Downloader </h1>
 
 <h2 align="center">
-<img src="https://images2.imgbox.com/5c/24/MDTKXMAN_o.png" width="400">
+<img src="https://images2.imgbox.com/5c/24/MDTKXMAN_o.png" width="600">
 </h2>
 
 <h3 align="center"> <a href="https://github.com/Sahampath">
@@ -11,17 +11,31 @@
 <img src="https://img.shields.io/github/stars/Sahampath/EroMe-Downloader?style=for-the-badge&logo=appveyor">
 <img src="https://img.shields.io/github/forks/Sahampath/EroMe-Downloader?style=for-the-badge&logo=appveyor"> </h4>
 
-##
+#
+## Install
+
+```bash
+git clone https://github.com/Sahampath/EroMe-Downloader.git
+```
+```bash
+pip install -r requirements.txt
+```
+```bash
+python app.py
+```
+
+#
 
 ### 👨‍💻 Programming languages
  <a href="#"><img alt="Python" src="https://img.shields.io/badge/Python%20-%2314354C.svg?logo=python&logoColor=white"></a>
  
-##
+#
 
 ### 🧰 Frameworks and libraries
 <a href="#"><img alt="Python" src="https://img.shields.io/badge/PyQt5%20-%2314354C.svg?logo=python&logoColor=white"></a>
+<a href="#"><img alt="Python" src="https://img.shields.io/badge/gallery dl%20-%2314354C.svg?logo=python&logoColor=white"></a>
 
-##
+#
 
 ### 🗄️ Databases and cloud hosting
 <a href="#"><img alt="GitHub Pages" src="https://img.shields.io/badge/GitHub%20Pages-%23327FC7.svg?logo=github&logoColor=white"></a>
