@@ -1,0 +1,2 @@
+gallery-dl
+pyqt5
