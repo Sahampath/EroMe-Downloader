@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QPlainTextEdit, QTabWidget
 )
 from PyQt5.QtCore import pyqtSignal, QObject, Qt
-from PyQt5.QtGui import QFont, QPalette, QColor
+from PyQt5.QtGui import QFont, QPalette, QColor, QIcon  # <-- added QIcon
 
 
 def get_default_downloads_folder():
@@ -299,7 +299,7 @@ class GalleryDLGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("❤ EroMe Media Downloader")
+        self.setWindowTitle("EroMe Media Downloader")
         self.setMinimumSize(1100, 700)
 
         self.download_dir = ""
@@ -345,7 +345,7 @@ class GalleryDLGUI(QMainWindow):
         images_layout = QVBoxLayout(self.images_tab)
         self.images_url_entry = QPlainTextEdit()
         self.images_url_entry.setPlaceholderText(
-            "Enter one URL per line\n Example:\nhttps://erome.com/a/example1"
+            "Enter one URL per line\nExample:\nhttps://erome.com/a/example1"
         )
         self.images_url_entry.setMaximumHeight(100)
         images_layout.addWidget(self.images_url_entry)
@@ -356,7 +356,7 @@ class GalleryDLGUI(QMainWindow):
         videos_layout = QVBoxLayout(self.videos_tab)
         self.videos_url_entry = QPlainTextEdit()
         self.videos_url_entry.setPlaceholderText(
-            "Enter one URL per line\n Example:\nhttps://erome.com/a/example1"
+            "Enter one URL per line\nExample:\nhttps://erome.com/a/example1"
         )
         self.videos_url_entry.setMaximumHeight(100)
         videos_layout.addWidget(self.videos_url_entry)
@@ -367,7 +367,7 @@ class GalleryDLGUI(QMainWindow):
         all_layout = QVBoxLayout(self.all_tab)
         self.all_url_entry = QPlainTextEdit()
         self.all_url_entry.setPlaceholderText(
-            "Enter one URL per line\n Example:\nhttps://erome.com/a/example1"
+            "Enter one URL per line\nExample:\nhttps://erome.com/a/example1"
         )
         self.all_url_entry.setMaximumHeight(100)
         all_layout.addWidget(self.all_url_entry)
@@ -396,7 +396,6 @@ class GalleryDLGUI(QMainWindow):
         # --- Progress group: now only a text label (no progress bar) ---
         progress_group = QGroupBox("📊 Progress")
         progress_layout = QVBoxLayout()
-        # Removed QProgressBar; keep only the details label
         self.progress_details = QLabel("Ready")
         self.progress_details.setAlignment(Qt.AlignCenter)
         progress_layout.addWidget(self.progress_details)
@@ -499,7 +498,6 @@ class GalleryDLGUI(QMainWindow):
             QPushButton:hover {{ background-color: {theme['highlight_hover']}; }}
             QPushButton:pressed {{ background-color: {theme['highlight_pressed']}; }}
             QPushButton:disabled {{ background-color: {theme['border']}; color: {theme['disabled_text']}; }}
-            /* Keep QProgressBar style for possible future use, but it's not used now */
             QProgressBar {{
                 border: none;
                 border-radius: 6px;
@@ -775,6 +773,19 @@ class GalleryDLGUI(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # Set window icon (logo) for the application
+    icon_path = "assets/icon.ico"
+    if not os.path.exists(icon_path):
+        icon_path = "assets/icon.png"
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+    else:
+        # Fallback to a standard system icon
+        style = app.style()
+        standard_icon = style.standardIcon(style.SP_ComputerIcon)
+        app.setWindowIcon(standard_icon)
+
     window = GalleryDLGUI()
     window.show()
     sys.exit(app.exec_())
