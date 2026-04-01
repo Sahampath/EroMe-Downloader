@@ -1,4 +1,4 @@
-<h1 align="center"> ❤️ EroMe Media Downloader </h1>
+<h1 align="center"> <img src="assets/icon.png" width="30"> EroMe Media Downloader </h1>
 
 <h2 align="center">
 <img src="https://images2.imgbox.com/cf/06/ZhBCdYGK_o.png" width="600">
