@@ -1,4 +1,4 @@
-<h1 align="center"> EroMe Media Downloader </h1>
+<h1 align="center"> ❤️ EroMe Media Downloader </h1>
 
 <h2 align="center">
 <img src="https://images2.imgbox.com/cf/06/ZhBCdYGK_o.png" width="600">
@@ -12,7 +12,26 @@
 <img src="https://img.shields.io/github/forks/Sahampath/EroMe-Downloader?style=for-the-badge&logo=appveyor"> </h4>
 
 #
-## Install
+
+## About EroMe Media Downloader
+A Python-based desktop application for downloading media from [EroMe](https://www.erome.com). Built with PyQt5 and powered by gallery-dl, it provides a simple graphical interface to fetch entire galleries, only images, or only videos.
+
+## Features
+- :floppy_disk: Download full galleries (images + videos)
+
+- :camera: Download only images from a gallery
+
+- :video_camera: Download only videos from a gallery
+
+- :rocket: Built with PyQt5 for a clean GUI
+
+- :wrench: Uses gallery-dl as the backend downloader
+
+## Limitations
+- :gear: Works exclusively with EroMe website (no support for other platforms)
+
+#
+## :hammer_and_pick: To Install
 
 ```bash
 git clone https://github.com/Sahampath/EroMe-Downloader.git
@@ -26,29 +45,29 @@ python app.py
 
 #
 
-### 👨‍💻 Programming languages
+### :man_technologist: Programming languages
  <a href="#"><img alt="Python" src="https://img.shields.io/badge/Python%20-%2314354C.svg?logo=python&logoColor=white"></a>
  
 #
 
-### 🧰 Frameworks and libraries
+### :books: Frameworks and libraries
 <a href="#"><img alt="Python" src="https://img.shields.io/badge/PyQt5%20-%2314354C.svg?logo=python&logoColor=white"></a>
 <a href="#"><img alt="Python" src="https://img.shields.io/badge/gallery dl%20-%2314354C.svg?logo=python&logoColor=white"></a>
 
 #
 
-### 🗄️ Databases and cloud hosting
+### :bookmark_tabs::satellite: Databases and cloud hosting
 <a href="#"><img alt="GitHub Pages" src="https://img.shields.io/badge/GitHub%20Pages-%23327FC7.svg?logo=github&logoColor=white"></a>
 
 #
 
-### 💻 Software and tools
+### :memo::computer: Software and tools
 <a href="#"><img alt="Visual Studio Code" src="https://img.shields.io/badge/Visual%20Studio%20Code-0078d7.svg?logo=visual-studio-code&logoColor=white"></a>
 <a href="#"><img alt="Notpad+ +" src="https://img.shields.io/badge/Notpad++-228B22.svg?logo=notepadplusplus&Color=white"></a>
 
 #
 
-<h2 align="center">Visitors Counts 👀</h2>
+<h2 align="center">:eyes: Visitors Counts</h2>
 <p align="center">
 <a href="https://github.com/Sahampath/EroMe-Downloader"><img alt="Cute Count" src="https://count.getloli.com/get/@Sahampath?theme=rule34" /></a>
 </p>
