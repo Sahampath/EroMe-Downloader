@@ -3,7 +3,6 @@ import subprocess
 import threading
 import os
 import json
-import time
 import re
 import tempfile
 from pathlib import Path
@@ -12,7 +11,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox,
     QProgressBar, QListWidget, QDialog, QGroupBox, QSplitter,
-    QCheckBox, QPlainTextEdit
+    QCheckBox, QPlainTextEdit, QTabWidget
 )
 from PyQt5.QtCore import pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QFont, QPalette, QColor
@@ -53,12 +52,17 @@ class WorkerSignals(QObject):
 
 
 class GalleryDLWorker(threading.Thread):
-    def __init__(self, urls, directory, signals, stop_flag, debug=False):
+    IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'webp']
+    VIDEO_EXTENSIONS = ['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'wmv', 'flv']
+    ALL_EXTENSIONS = IMAGE_EXTENSIONS + VIDEO_EXTENSIONS
+
+    def __init__(self, urls, directory, signals, stop_flag, media_type='all', debug=False):
         super().__init__()
         self.urls = urls
         self.directory = directory
         self.signals = signals
         self.stop_flag = stop_flag
+        self.media_type = media_type
         self.process = None
         self.debug = debug
         self.python_cmd = get_python_command()
@@ -72,6 +76,16 @@ class GalleryDLWorker(threading.Thread):
         self.temp_config_files.append(path)
         return path
 
+    def _build_filter_expr(self):
+        if self.media_type == 'images':
+            exts = self.IMAGE_EXTENSIONS
+        elif self.media_type == 'videos':
+            exts = self.VIDEO_EXTENSIONS
+        else:
+            return None
+        ext_tuple = ', '.join(f"'{ext}'" for ext in exts)
+        return f"extension in ({ext_tuple})"
+
     def run(self):
         try:
             check = subprocess.run([self.python_cmd, '-m', 'gallery_dl', '--version'],
@@ -80,19 +94,31 @@ class GalleryDLWorker(threading.Thread):
                 self.signals.error.emit(f"gallery-dl not found. Install: {self.python_cmd} -m pip install gallery-dl")
                 return
 
+            pattern = r'\.(' + '|'.join(self.ALL_EXTENSIONS) + r')$'
+            file_saved_pattern = re.compile(
+                r'^([A-Za-z]:[\\/]|/).+' + pattern,
+                re.IGNORECASE
+            )
+
             for url in self.urls:
                 if self.stop_flag.is_set():
                     break
 
                 self.signals.output.emit(f"\n[INFO] Processing: {url}\n")
 
-                # Download command
                 cmd = [self.python_cmd, "-m", "gallery_dl", "-d", self.directory]
+
                 temp_config = None
                 if "erome.com" in url.lower():
                     temp_config = self.create_erome_config()
                     cmd.extend(["-c", temp_config])
                     self.signals.output.emit("[INFO] Create New Folder\n")
+
+                filter_expr = self._build_filter_expr()
+                if filter_expr:
+                    cmd.extend(["--filter", filter_expr])
+                    if self.debug:
+                        self.signals.output.emit(f"[DEBUG] Filter: {filter_expr}\n")
 
                 cmd.append(url)
 
@@ -110,10 +136,6 @@ class GalleryDLWorker(threading.Thread):
 
                 downloaded_files = 0
                 seen_files = set()
-                file_saved_pattern = re.compile(
-                    r'^([A-Za-z]:[\\/]|/).+\.(jpg|jpeg|png|gif|mp4|webm|mov|avi|mkv|m4v|wmv|flv|bmp|tiff|webp)$',
-                    re.IGNORECASE
-                )
 
                 for line in self.process.stdout:
                     if self.stop_flag.is_set():
@@ -223,7 +245,7 @@ class HistoryDialog(QDialog):
     def redownload(self):
         current = self.list_widget.currentItem()
         if current:
-            self.parent.url_entry.setPlainText(current.text())
+            self.parent.set_urls_from_tab(current.text())
             self.accept()
             self.parent.start_download()
 
@@ -248,6 +270,33 @@ class HistoryDialog(QDialog):
 
 
 class GalleryDLGUI(QMainWindow):
+    THEMES = {
+        'images': {
+            'bg_main': '#1e1e2f', 'bg_panel': '#25253a', 'bg_entry': '#2d2d40',
+            'text': '#f0f0f0', 'border': '#3a3a4a', 'highlight': '#0e639c',
+            'highlight_hover': '#1177bb', 'highlight_pressed': '#0a4d73',
+            'disabled_text': '#8a8a8a', 'progress_start': '#0e639c', 'progress_end': '#4ec0e9',
+            'scrollbar_bg': '#2d2d40', 'scrollbar_handle': '#5a5a6a', 'scrollbar_handle_hover': '#6a6a7a',
+            'credit_color': '#ff4d4d', 'status_color': '#4ec0e9',
+        },
+        'videos': {
+            'bg_main': '#2f1e1e', 'bg_panel': '#3a2525', 'bg_entry': '#402d2d',
+            'text': '#f0f0f0', 'border': '#4a3a3a', 'highlight': '#9c3e0e',
+            'highlight_hover': '#b84e1a', 'highlight_pressed': '#7a2e0a',
+            'disabled_text': '#8a8a8a', 'progress_start': '#9c3e0e', 'progress_end': '#e06c3e',
+            'scrollbar_bg': '#402d2d', 'scrollbar_handle': '#6a4a4a', 'scrollbar_handle_hover': '#7a5a5a',
+            'credit_color': '#ff4d4d', 'status_color': '#e06c3e',
+        },
+        'all': {
+            'bg_main': '#1e2f1e', 'bg_panel': '#253a25', 'bg_entry': '#2d402d',
+            'text': '#f0f0f0', 'border': '#3a4a3a', 'highlight': '#0e9c6b',
+            'highlight_hover': '#1ab87a', 'highlight_pressed': '#0a7a52',
+            'disabled_text': '#8a8a8a', 'progress_start': '#0e9c6b', 'progress_end': '#4ec08e',
+            'scrollbar_bg': '#2d402d', 'scrollbar_handle': '#5a6a5a', 'scrollbar_handle_hover': '#6a7a6a',
+            'credit_color': '#ff4d4d', 'status_color': '#4ec08e',
+        }
+    }
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("❤ EroMe Media Downloader")
@@ -262,7 +311,8 @@ class GalleryDLGUI(QMainWindow):
 
         self.load_history()
         self.setup_ui()
-        self.apply_modern_stylesheet()
+        self.apply_theme('images')
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
 
         default_dir = get_default_downloads_folder()
         self.download_dir = default_dir
@@ -275,25 +325,55 @@ class GalleryDLGUI(QMainWindow):
 
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.setHandleWidth(2)
-        main_splitter.setStyleSheet("QSplitter::handle { background-color: #2d2d30; }")
 
-        # LEFT PANEL
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(15)
         left_layout.setContentsMargins(15, 15, 15, 15)
 
-        url_group = QGroupBox("🔗 Download URLs")
-        url_layout = QVBoxLayout()
-        self.url_entry = QPlainTextEdit()
-        self.url_entry.setPlaceholderText(
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setStyleSheet("""
+            QTabWidget::pane { border: 1px solid #3a3a3a; background-color: #252526; border-radius: 8px; }
+            QTabBar::tab { background-color: #2d2d30; color: #f0f0f0; padding: 8px 20px; margin-right: 2px;
+                           border-top-left-radius: 6px; border-top-right-radius: 6px; }
+            QTabBar::tab:selected { background-color: #0e639c; color: white; }
+            QTabBar::tab:hover:!selected { background-color: #3a3a3a; }
+        """)
+
+        # Tab 1: Images
+        self.images_tab = QWidget()
+        images_layout = QVBoxLayout(self.images_tab)
+        self.images_url_entry = QPlainTextEdit()
+        self.images_url_entry.setPlaceholderText(
             "Enter one URL per line\n Example:\nhttps://erome.com/a/example1"
         )
-        self.url_entry.setMaximumHeight(100)
-        self.url_entry.setStyleSheet("font-size: 12px; padding: 6px;")
-        url_layout.addWidget(self.url_entry)
-        url_group.setLayout(url_layout)
-        left_layout.addWidget(url_group)
+        self.images_url_entry.setMaximumHeight(100)
+        images_layout.addWidget(self.images_url_entry)
+        self.tab_widget.addTab(self.images_tab, "🖼️ Images")
+
+        # Tab 2: Videos
+        self.videos_tab = QWidget()
+        videos_layout = QVBoxLayout(self.videos_tab)
+        self.videos_url_entry = QPlainTextEdit()
+        self.videos_url_entry.setPlaceholderText(
+            "Enter one URL per line\n Example:\nhttps://erome.com/a/example1"
+        )
+        self.videos_url_entry.setMaximumHeight(100)
+        videos_layout.addWidget(self.videos_url_entry)
+        self.tab_widget.addTab(self.videos_tab, "🎥 Videos")
+
+        # Tab 3: All Medias
+        self.all_tab = QWidget()
+        all_layout = QVBoxLayout(self.all_tab)
+        self.all_url_entry = QPlainTextEdit()
+        self.all_url_entry.setPlaceholderText(
+            "Enter one URL per line\n Example:\nhttps://erome.com/a/example1"
+        )
+        self.all_url_entry.setMaximumHeight(100)
+        all_layout.addWidget(self.all_url_entry)
+        self.tab_widget.addTab(self.all_tab, "📁 All Medias")
+
+        left_layout.addWidget(self.tab_widget)
 
         dir_group = QGroupBox("📁 Download Directory")
         dir_layout = QVBoxLayout()
@@ -313,13 +393,10 @@ class GalleryDLGUI(QMainWindow):
         dir_group.setLayout(dir_layout)
         left_layout.addWidget(dir_group)
 
-        # PROGRESS BAR - redesigned
+        # --- Progress group: now only a text label (no progress bar) ---
         progress_group = QGroupBox("📊 Progress")
         progress_layout = QVBoxLayout()
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("%v/%m files")
-        progress_layout.addWidget(self.progress_bar)
+        # Removed QProgressBar; keep only the details label
         self.progress_details = QLabel("Ready")
         self.progress_details.setAlignment(Qt.AlignCenter)
         progress_layout.addWidget(self.progress_details)
@@ -349,7 +426,6 @@ class GalleryDLGUI(QMainWindow):
         left_layout.addLayout(btn_layout)
         left_layout.addStretch()
 
-        # RIGHT PANEL
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(10, 15, 15, 15)
@@ -366,115 +442,182 @@ class GalleryDLGUI(QMainWindow):
         main_splitter.addWidget(right_panel)
         main_splitter.setSizes([400, 700])
 
-        # Main vertical layout for central widget
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(main_splitter)
 
-        # Bottom bar with status on left and credit on right
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(10, 5, 10, 5)
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("padding: 4px; background-color: #252526; color: #4ec0e9;")
+        self.status_label.setObjectName("status_label")
         bottom_layout.addWidget(self.status_label, 1)
 
-        # Credit label (bottom right) - RED AND BOLD
         self.credit_label = QLabel("Dev | By RJ")
         self.credit_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.credit_label.setStyleSheet("""
-            QLabel {
-                color: #ff4d4d;
-                font-weight: bold;
-                font-size: 10px;
-                padding-right: 5px;
-            }
-        """)
+        self.credit_label.setObjectName("credit_label")
         self.credit_label.setToolTip("Developed by RJ")
         bottom_layout.addWidget(self.credit_label)
 
         main_layout.addLayout(bottom_layout)
 
-    def apply_modern_stylesheet(self):
-        self.setStyleSheet("""
-            QMainWindow { background-color: #1e1e1e; }
-            QGroupBox {
+    def generate_stylesheet(self, theme):
+        return f"""
+            QMainWindow {{ background-color: {theme['bg_main']}; }}
+            QGroupBox {{
                 font-weight: bold;
-                border: 1px solid #2d2d30;
+                border: 1px solid {theme['border']};
                 border-radius: 10px;
                 margin-top: 12px;
-                background-color: #252526;
-                color: #f0f0f0;
-            }
-            QGroupBox::title {
+                background-color: {theme['bg_panel']};
+                color: {theme['text']};
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 12px;
                 padding: 0 8px;
-                background-color: #252526;
-                color: #4ec0e9;
-            }
-            QLineEdit, QPlainTextEdit, QTextEdit {
-                border: 1px solid #3a3a3a;
+                background-color: {theme['bg_panel']};
+                color: {theme['status_color']};
+            }}
+            QLineEdit, QPlainTextEdit, QTextEdit {{
+                border: 1px solid {theme['border']};
                 border-radius: 6px;
-                background-color: #2d2d30;
-                color: #f0f0f0;
-                selection-background-color: #0e639c;
-            }
-            QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {
-                border: 1px solid #0e639c;
-            }
-            QPushButton {
-                background-color: #0e639c;
+                background-color: {theme['bg_entry']};
+                color: {theme['text']};
+                selection-background-color: {theme['highlight']};
+            }}
+            QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
+                border: 1px solid {theme['highlight']};
+            }}
+            QPushButton {{
+                background-color: {theme['highlight']};
                 color: white;
                 border: none;
                 border-radius: 6px;
                 padding: 8px;
                 font-weight: bold;
-            }
-            QPushButton:hover { background-color: #1177bb; }
-            QPushButton:pressed { background-color: #0a4d73; }
-            QPushButton:disabled { background-color: #3a3a3a; color: #8a8a8a; }
-            QProgressBar {
+            }}
+            QPushButton:hover {{ background-color: {theme['highlight_hover']}; }}
+            QPushButton:pressed {{ background-color: {theme['highlight_pressed']}; }}
+            QPushButton:disabled {{ background-color: {theme['border']}; color: {theme['disabled_text']}; }}
+            /* Keep QProgressBar style for possible future use, but it's not used now */
+            QProgressBar {{
                 border: none;
                 border-radius: 6px;
-                background-color: #2d2d30;
+                background-color: {theme['bg_entry']};
                 height: 16px;
                 text-align: center;
                 font-weight: bold;
-            }
-            QProgressBar::chunk {
+            }}
+            QProgressBar::chunk {{
                 background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                                  stop:0 #0e639c, stop:1 #4ec0e9);
+                                                  stop:0 {theme['progress_start']}, stop:1 {theme['progress_end']});
                 border-radius: 6px;
-            }
-            QCheckBox {
-                color: #f0f0f0;
+            }}
+            QCheckBox {{
+                color: {theme['text']};
                 spacing: 8px;
-            }
-            QCheckBox::indicator {
+            }}
+            QCheckBox::indicator {{
                 width: 18px;
                 height: 18px;
                 border-radius: 4px;
-                border: 1px solid #3a3a3a;
-                background-color: #2d2d30;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #0e639c;
-                border: 1px solid #0e639c;
-            }
-            QScrollBar:vertical {
-                background-color: #2d2d30;
+                border: 1px solid {theme['border']};
+                background-color: {theme['bg_entry']};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {theme['highlight']};
+                border: 1px solid {theme['highlight']};
+            }}
+            QScrollBar:vertical {{
+                background-color: {theme['scrollbar_bg']};
                 width: 10px;
                 border-radius: 5px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #5a5a5a;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {theme['scrollbar_handle']};
                 border-radius: 5px;
                 min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #6a6a6a;
-            }
-        """)
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {theme['scrollbar_handle_hover']};
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {theme['border']};
+                background-color: {theme['bg_panel']};
+                border-radius: 8px;
+            }}
+            QTabBar::tab {{
+                background-color: {theme['bg_entry']};
+                color: {theme['text']};
+                padding: 8px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }}
+            QTabBar::tab:selected {{
+                background-color: {theme['highlight']};
+                color: white;
+            }}
+            QTabBar::tab:hover:!selected {{
+                background-color: {theme['border']};
+            }}
+            QSplitter::handle {{
+                background-color: {theme['border']};
+            }}
+            QListWidget {{
+                background-color: {theme['bg_entry']};
+                color: {theme['text']};
+                border: 1px solid {theme['border']};
+                border-radius: 8px;
+                font-family: monospace;
+                padding: 5px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {theme['highlight']};
+                color: white;
+            }}
+            QDialog {{
+                background-color: {theme['bg_main']};
+                color: {theme['text']};
+            }}
+            QLabel#status_label {{
+                background-color: {theme['bg_panel']};
+                color: {theme['status_color']};
+                padding: 4px;
+            }}
+            QLabel#credit_label {{
+                color: {theme['credit_color']};
+            }}
+        """
+
+    def apply_theme(self, theme_name):
+        theme = self.THEMES.get(theme_name, self.THEMES['images'])
+        stylesheet = self.generate_stylesheet(theme)
+        self.setStyleSheet(stylesheet)
+
+        # Update application palette
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(theme['bg_main']))
+        palette.setColor(QPalette.WindowText, QColor(theme['text']))
+        palette.setColor(QPalette.Base, QColor(theme['bg_entry']))
+        palette.setColor(QPalette.AlternateBase, QColor(theme['bg_panel']))
+        palette.setColor(QPalette.ToolTipBase, QColor(theme['text']))
+        palette.setColor(QPalette.ToolTipText, QColor(theme['text']))
+        palette.setColor(QPalette.Text, QColor(theme['text']))
+        palette.setColor(QPalette.Button, QColor(theme['bg_panel']))
+        palette.setColor(QPalette.ButtonText, QColor(theme['text']))
+        palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
+        palette.setColor(QPalette.Highlight, QColor(theme['highlight']))
+        palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+        QApplication.instance().setPalette(palette)
+
+    def on_tab_changed(self, index):
+        if index == 0:
+            self.apply_theme('images')
+        elif index == 1:
+            self.apply_theme('videos')
+        elif index == 2:
+            self.apply_theme('all')
 
     def toggle_debug(self, state):
         self.debug_mode = (state == Qt.Checked)
@@ -497,20 +640,45 @@ class GalleryDLGUI(QMainWindow):
             else:
                 os.system(f'open "{self.download_dir}"')
 
-    def start_download(self):
-        urls_text = self.url_entry.toPlainText().strip()
-        if not urls_text:
-            QMessageBox.warning(self, "Error", "Please enter at least one URL.")
-            return
+    def get_urls_from_active_tab(self):
+        current_index = self.tab_widget.currentIndex()
+        if current_index == 0:
+            text = self.images_url_entry.toPlainText()
+        elif current_index == 1:
+            text = self.videos_url_entry.toPlainText()
+        else:
+            text = self.all_url_entry.toPlainText()
+        return [url.strip() for url in text.splitlines() if url.strip()]
 
-        urls = [url.strip() for url in urls_text.splitlines() if url.strip()]
+    def set_urls_to_active_tab(self, urls_text):
+        current_index = self.tab_widget.currentIndex()
+        if current_index == 0:
+            self.images_url_entry.setPlainText(urls_text)
+        elif current_index == 1:
+            self.videos_url_entry.setPlainText(urls_text)
+        else:
+            self.all_url_entry.setPlainText(urls_text)
+
+    def set_urls_from_tab(self, url):
+        self.set_urls_to_active_tab(url)
+
+    def start_download(self):
+        urls = self.get_urls_from_active_tab()
         if not urls:
-            QMessageBox.warning(self, "Error", "No valid URLs found.")
+            QMessageBox.warning(self, "Error", "Please enter at least one URL.")
             return
 
         if not self.download_dir:
             QMessageBox.warning(self, "Error", "No download directory selected.")
             return
+
+        current_index = self.tab_widget.currentIndex()
+        if current_index == 0:
+            media_type = 'images'
+        elif current_index == 1:
+            media_type = 'videos'
+        else:
+            media_type = 'all'
 
         os.makedirs(self.download_dir, exist_ok=True)
 
@@ -521,8 +689,6 @@ class GalleryDLGUI(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.clear_output_btn.setEnabled(False)
         self.output_area.clear()
-        self.progress_bar.setValue(0)
-        self.progress_bar.setMaximum(0)
         self.progress_details.setText("Starting download...")
         self.stop_flag.clear()
 
@@ -532,7 +698,8 @@ class GalleryDLGUI(QMainWindow):
         self.signals.finished.connect(self.download_finished)
         self.signals.error.connect(self.show_error)
 
-        self.worker = GalleryDLWorker(urls, self.download_dir, self.signals, self.stop_flag, self.debug_mode)
+        self.worker = GalleryDLWorker(urls, self.download_dir, self.signals,
+                                      self.stop_flag, media_type, self.debug_mode)
         self.worker.start()
         self.status_label.setText("Downloading...")
 
@@ -554,18 +721,12 @@ class GalleryDLGUI(QMainWindow):
         scrollbar.setValue(scrollbar.maximum())
 
     def update_progress(self, completed, total):
-        # total is dynamic (number of unique saved files)
         if total == 0:
-            self.progress_bar.setMaximum(0)
-            self.progress_bar.setFormat("0/0 files")
             self.progress_details.setText("Waiting for first file...")
         else:
-            self.progress_bar.setMaximum(total)
-            self.progress_bar.setValue(completed)
-            self.progress_bar.setFormat(f"{completed}/{total} files")
             self.progress_details.setText(f"Downloaded {completed} of {total} files")
             if completed == total:
-                self.progress_bar.setFormat("100% - Complete")
+                self.progress_details.setText("Download completed!")
 
     def download_finished(self):
         self.append_output("\n[SUCCESS] All downloads completed. ✔\n")
@@ -608,29 +769,12 @@ class GalleryDLGUI(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.clear_output_btn.setEnabled(True)
         self.status_label.setText("Error occurred")
-        self.progress_bar.setValue(0)
         self.progress_details.setText("Error occurred")
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-
-    palette = QPalette()
-    palette.setColor(QPalette.Window, QColor(30, 30, 30))
-    palette.setColor(QPalette.WindowText, QColor(240, 240, 240))
-    palette.setColor(QPalette.Base, QColor(45, 45, 48))
-    palette.setColor(QPalette.AlternateBase, QColor(37, 37, 38))
-    palette.setColor(QPalette.ToolTipBase, QColor(240, 240, 240))
-    palette.setColor(QPalette.ToolTipText, QColor(240, 240, 240))
-    palette.setColor(QPalette.Text, QColor(240, 240, 240))
-    palette.setColor(QPalette.Button, QColor(45, 45, 48))
-    palette.setColor(QPalette.ButtonText, QColor(240, 240, 240))
-    palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
-    palette.setColor(QPalette.Highlight, QColor(14, 99, 156))
-    palette.setColor(QPalette.HighlightedText, QColor(240, 240, 240))
-    app.setPalette(palette)
-
     window = GalleryDLGUI()
     window.show()
     sys.exit(app.exec_())
