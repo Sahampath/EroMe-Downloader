@@ -14,7 +14,7 @@
 #
 
 ## About EroMe Media Downloader
-A Python-based desktop application for downloading media from [EroMe](https://www.erome.com). Built with PyQt5 and powered by gallery-dl, it provides a simple graphical interface to fetch entire galleries, only images, or only videos.
+A Python-based desktop application for downloading media from EroMe. Built with PyQt5 and powered by gallery-dl, it provides a simple graphical interface to fetch entire galleries, only images, or only videos.
 
 ## Features
 - :floppy_disk: Download full galleries (images + videos)
@@ -28,7 +28,7 @@ A Python-based desktop application for downloading media from [EroMe](https://ww
 - :wrench: Uses gallery-dl as the backend downloader
 
 ## Limitations
-- :gear: Works exclusively with EroMe website (no support for other platforms)
+- :gear: Works exclusively with [EroMe](https://www.erome.com) website (no support for other platforms)
 
 #
 ## :hammer_and_pick: To Install
