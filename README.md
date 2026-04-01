@@ -17,6 +17,7 @@
 A Python-based desktop application for downloading media from EroMe. Built with PyQt5 and powered by gallery-dl, it provides a simple graphical interface to fetch entire galleries, only images, or only videos.
 
 ## Features
+
 - :floppy_disk: Download full galleries (images + videos)
 
 - :camera: Download only images from a gallery
@@ -26,6 +27,11 @@ A Python-based desktop application for downloading media from EroMe. Built with 
 - :rocket: Built with PyQt5 for a clean GUI
 
 - :wrench: Uses gallery-dl as the backend downloader
+
+**TAB COLORS**
+- 📁 All Medias ![green](https://placehold.co/16x16/33CC33/33CC33)
+- 📷 Images ![blue](https://placehold.co/16x16/3366FF/3366FF)
+- 📹 Videos ![orange](https://placehold.co/16x16/FFA500/FFA500)
 
 ## Limitations
 - :gear: Works exclusively with [EroMe](https://www.erome.com) website (no support for other platforms)
