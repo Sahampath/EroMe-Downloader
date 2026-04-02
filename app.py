@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QPlainTextEdit, QTabWidget
 )
 from PyQt5.QtCore import pyqtSignal, QObject, Qt
-from PyQt5.QtGui import QFont, QPalette, QColor, QIcon  # <-- added QIcon
+from PyQt5.QtGui import QFont, QPalette, QColor, QIcon, QPixmap
 
 
 def get_default_downloads_folder():
@@ -349,7 +349,7 @@ class GalleryDLGUI(QMainWindow):
         )
         self.images_url_entry.setMaximumHeight(100)
         images_layout.addWidget(self.images_url_entry)
-        self.tab_widget.addTab(self.images_tab, "🖼️ Images")
+        self.tab_widget.addTab(self.images_tab, "📷 Images")
 
         # Tab 2: Videos
         self.videos_tab = QWidget()
@@ -771,21 +771,37 @@ class GalleryDLGUI(QMainWindow):
 
 
 if __name__ == "__main__":
+    # ---- Set AppUserModelID (must be before QApplication) ----
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EroMeDownloader.RJ.1.0.3")
+        except:
+            pass
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # Set window icon (logo) for the application
-    icon_path = "assets/icon.ico"
-    if not os.path.exists(icon_path):
-        icon_path = "assets/icon.png"
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
-    else:
-        # Fallback to a standard system icon
-        style = app.style()
-        standard_icon = style.standardIcon(style.SP_ComputerIcon)
-        app.setWindowIcon(standard_icon)
+    # ---- Locate or create icon ----
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    icon_path = os.path.join(base_path, "assets", "icon.png")
 
+    if os.path.exists(icon_path):
+        icon = QIcon(icon_path)
+        print(f"[INFO] Using icon from: {icon_path}")
+    else:
+        # Fallback to a built-in icon (16x16 colored square)
+        print(f"[WARNING] Icon not found at {icon_path}, using built-in fallback.")
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.red)
+        icon = QIcon(pixmap)
+
+    # Set application icon (affects taskbar on Windows)
+    app.setWindowIcon(icon)
+
+    # Create and show window
     window = GalleryDLGUI()
+    window.setWindowIcon(icon)
     window.show()
+
     sys.exit(app.exec_())
