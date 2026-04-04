@@ -1,7 +1,7 @@
 <h1 align="center"> <img src="assets/icon.png" width="30"> EroMe Media Downloader </h1>
 
 <h2 align="center">
-<img src="https://images2.imgbox.com/8f/4e/kVbeui3N_o.png" width="600">
+<img src="https://images2.imgbox.com/23/0f/uWy88ocI_o.png" width="600">
 </h2>
 
 <h3 align="center"> <a href="https://github.com/Sahampath">
@@ -27,11 +27,6 @@ A Python-based desktop application for downloading media from EroMe. Built with 
 - :rocket: Built with PyQt5 for a clean GUI
 
 - :wrench: Uses gallery-dl as the backend downloader
-
-**TAB COLORS**
-- 📁 All Medias ![green](https://placehold.co/16x16/33CC33/33CC33)
-- 📷 Images ![blue](https://placehold.co/16x16/3366FF/3366FF)
-- 📹 Videos ![orange](https://placehold.co/16x16/FFA500/FFA500)
 
 ## Limitations
 - :gear: Works exclusively with [EroMe](https://www.erome.com) website (no support for other platforms)
