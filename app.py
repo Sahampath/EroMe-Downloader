@@ -11,10 +11,10 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox,
     QProgressBar, QListWidget, QDialog, QGroupBox, QSplitter,
-    QCheckBox, QPlainTextEdit
+    QCheckBox, QPlainTextEdit, QSplashScreen
 )
 from PyQt5.QtCore import pyqtSignal, QObject, Qt
-from PyQt5.QtGui import QFont, QPalette, QColor, QIcon, QPixmap
+from PyQt5.QtGui import QFont, QPalette, QColor, QIcon, QPixmap, QPainter
 
 
 def get_default_downloads_folder():
@@ -56,7 +56,8 @@ class GalleryDLWorker(threading.Thread):
     VIDEO_EXTENSIONS = ['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'wmv', 'flv']
     ALL_EXTENSIONS = IMAGE_EXTENSIONS + VIDEO_EXTENSIONS
 
-    def __init__(self, urls, directory, signals, stop_flag, media_type='all', debug=False, num_threads=4):
+    def __init__(self, urls, directory, signals, stop_flag, media_type='all',
+                 debug=False, num_threads=4, skip_existing=False):
         super().__init__()
         self.urls = urls
         self.directory = directory
@@ -68,9 +69,18 @@ class GalleryDLWorker(threading.Thread):
         self.python_cmd = get_python_command()
         self.temp_config_files = []
         self.num_threads = num_threads
+        self.skip_existing = skip_existing
+        self._skip_folder_printed = False
 
-    def create_erome_config(self):
-        config = {"extractor": {"erome": {"directory": ["{title}"]}}}
+    def create_config(self, url, skip_existing=False):
+        """Create a temporary config file with Erome directory template and/or skip option."""
+        config = {}
+        if "erome.com" in url.lower():
+            config["extractor"] = {"erome": {"directory": ["{title}"]}}
+        if skip_existing:
+            config["downloader"] = {"skip": True}
+        if not config:
+            return None
         fd, path = tempfile.mkstemp(suffix='.json', prefix='gallerydl_', text=True)
         with os.fdopen(fd, 'w') as f:
             json.dump(config, f, indent=2)
@@ -89,6 +99,7 @@ class GalleryDLWorker(threading.Thread):
 
     def run(self):
         try:
+            # Check gallery-dl availability
             check = subprocess.run([self.python_cmd, '-m', 'gallery_dl', '--version'],
                                    capture_output=True, text=True)
             if check.returncode != 0:
@@ -103,6 +114,7 @@ class GalleryDLWorker(threading.Thread):
                     break
 
                 self.signals.output.emit(f"\n📥 Processing: {url}\n")
+                self._skip_folder_printed = False
 
                 cmd = [self.python_cmd, "-m", "gallery_dl", "-d", self.directory]
 
@@ -111,11 +123,10 @@ class GalleryDLWorker(threading.Thread):
                     if self.debug:
                         self.signals.output.emit(f"⚙️ Using {self.num_threads} parallel threads\n")
 
-                temp_config = None
-                if "erome.com" in url.lower():
-                    temp_config = self.create_erome_config()
-                    cmd.extend(["-c", temp_config])
-                    self.signals.output.emit("📁 Creating subfolder for album\n")
+                # Create config file if needed (for Erome folder or skip)
+                config_path = self.create_config(url, self.skip_existing)
+                if config_path:
+                    cmd.extend(["-c", config_path])
 
                 filter_expr = self._build_filter_expr()
                 if filter_expr:
@@ -144,10 +155,20 @@ class GalleryDLWorker(threading.Thread):
                         self.process.terminate()
                         break
 
+                    line_stripped = line.strip()
+
+                    if self.skip_existing and line_stripped.startswith('#'):
+                        path_part = line_stripped[1:].strip()
+                        if path_part and not self._skip_folder_printed:
+                            folder = os.path.basename(os.path.dirname(path_part))
+                            if folder:
+                                self.signals.output.emit(f"⏭️ Skipping files in folder: {folder} (already exist)\n")
+                                self._skip_folder_printed = True
+                        continue
+
                     if self.debug:
                         self.signals.output.emit(f"[RAW] {line}")
 
-                    line_stripped = line.strip()
                     if file_saved_pattern.match(line_stripped):
                         downloaded_files += 1
                         self.signals.output.emit(f"📄 Downloaded: {downloaded_files} files so far\n")
@@ -157,12 +178,6 @@ class GalleryDLWorker(threading.Thread):
 
                 if self.process:
                     self.process.wait()
-
-                if temp_config and os.path.exists(temp_config):
-                    try:
-                        os.remove(temp_config)
-                    except:
-                        pass
 
             if not self.stop_flag.is_set():
                 self.signals.finished.emit()
@@ -239,7 +254,7 @@ class HistoryDialog(QDialog):
                 font-family: monospace;
                 padding: 5px;
             }
-            QListWidget::item:selected { background-color: #0e639c; color: white; }
+            QListWidget::item:selected { background-color: #f57c00; color: white; }
         """)
 
     def redownload(self):
@@ -270,23 +285,24 @@ class HistoryDialog(QDialog):
 
 
 class GalleryDLGUI(QMainWindow):
-    # Dark theme without green
+    # ---------- ORANGE & BLACK THEME ----------
     THEME = {
-        'bg_main': '#121212',          # pure dark background
-        'bg_panel': '#1e1e1e',         # slightly lighter panel
-        'bg_entry': '#2d2d2d',         # input fields
-        'text': '#e0e0e0',             # light gray text
-        'border': '#3a3a3a',           # subtle borders
-        'highlight': '#0078d4',        # Microsoft blue accent
-        'highlight_hover': '#1a8cff',  # lighter blue on hover
-        'highlight_pressed': '#005a9e', # darker blue when pressed
-        'disabled_text': '#6a6a6a',    # dimmed text
-        'progress_start': '#0078d4',   # blue gradient start
-        'progress_end': '#4eb3ff',     # lighter blue gradient end
-        'scrollbar_bg': '#1e1e1e',
+        'bg_main': '#0d0d0d',
+        'bg_panel': '#1a1a1a',
+        'bg_entry': '#2a2a2a',
+        'text': '#f0f0f0',
+        'border': '#3d3d3d',
+        'highlight': '#f57c00',
+        'highlight_hover': '#ffa726',
+        'highlight_pressed': '#e65100',
+        'disabled_text': '#6a6a6a',
+        'progress_start': '#ef6c00',
+        'progress_end': '#ffab00',
+        'scrollbar_bg': '#1a1a1a',
         'scrollbar_handle': '#4a4a4a',
         'scrollbar_handle_hover': '#5a5a5a',
     }
+    # ----------------------------------------------
 
     def __init__(self):
         super().__init__()
@@ -302,15 +318,55 @@ class GalleryDLGUI(QMainWindow):
         self.url_queue = []
         self.signals = None
         self.debug_mode = False
+        self.skip_existing = True
 
         self.load_history()
         self.setup_ui()
         self.apply_theme()
 
         default_dir = get_default_downloads_folder()
-        self.download_dir = default_dir
+        erome_dir = os.path.join(default_dir, "Erome")
+        os.makedirs(erome_dir, exist_ok=True)
+        self.download_dir = erome_dir
         self.dir_path.setText(self.download_dir)
         self.open_dir_btn.setEnabled(True)
+        self.set_erome_folder_icon(erome_dir)
+
+    def set_erome_folder_icon(self, folder_path):
+        """Set custom icon for the Erome folder (Windows only)."""
+        if sys.platform != 'win32':
+            self.append_output("ℹ️ Custom folder icons are only supported on Windows.\n")
+            return
+
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
+        if not os.path.exists(icon_path):
+            self.append_output(f"⚠️ Icon file not found: {icon_path}\n")
+            return
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            os.makedirs(folder_path, exist_ok=True)
+
+            ini_path = os.path.join(folder_path, 'desktop.ini')
+            with open(ini_path, 'w') as f:
+                f.write('[.ShellClassInfo]\n')
+                f.write(f'IconResource={os.path.abspath(icon_path)},0\n')
+
+            FILE_ATTRIBUTE_READONLY = 0x1
+            FILE_ATTRIBUTE_SYSTEM = 0x4
+            ctypes.windll.kernel32.SetFileAttributesW(folder_path, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM)
+            ctypes.windll.kernel32.SetFileAttributesW(ini_path, 0x2 | 0x4)
+
+            SHCNE_ASSOCCHANGED = 0x08000000
+            SHCNF_IDLIST = 0x0000
+            ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
+
+            self.append_output(f"✅ Folder icon set for: {folder_path}\n")
+
+        except Exception as e:
+            self.append_output(f"❌ Failed to set folder icon: {e}\n")
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -369,7 +425,7 @@ class GalleryDLGUI(QMainWindow):
         progress_group = QGroupBox("📊 Progress")
         progress_layout = QVBoxLayout()
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # Indeterminate mode
+        self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
         self.progress_label = QLabel("Ready")
         self.progress_label.setAlignment(Qt.AlignCenter)
@@ -394,9 +450,17 @@ class GalleryDLGUI(QMainWindow):
             btn.setMinimumHeight(40)
             btn_layout.addWidget(btn)
 
+        options_layout = QHBoxLayout()
         self.debug_checkbox = QCheckBox("🐞 Debug Mode")
         self.debug_checkbox.stateChanged.connect(self.toggle_debug)
-        btn_layout.addWidget(self.debug_checkbox)
+        options_layout.addWidget(self.debug_checkbox)
+
+        self.skip_checkbox = QCheckBox("⏭️ Skip existing files")
+        self.skip_checkbox.setChecked(True)
+        self.skip_checkbox.stateChanged.connect(self.toggle_skip)
+        options_layout.addWidget(self.skip_checkbox)
+        options_layout.addStretch()
+        btn_layout.addLayout(options_layout)
 
         left_layout.addLayout(btn_layout)
         left_layout.addStretch()
@@ -559,15 +623,20 @@ class GalleryDLGUI(QMainWindow):
         self.debug_mode = (state == Qt.Checked)
         self.append_output(f"🐞 Debug mode {'ON' if self.debug_mode else 'OFF'}\n")
 
+    def toggle_skip(self, state):
+        self.skip_existing = (state == Qt.Checked)
+        self.append_output(f"⏭️ Skip existing files {'ON' if self.skip_existing else 'OFF'}\n")
+
     def select_directory(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Download Directory")
         if folder:
-            downloads_subfolder = os.path.join(folder, "Downloads")
-            os.makedirs(downloads_subfolder, exist_ok=True)
-            self.download_dir = downloads_subfolder
+            erome_dir = os.path.join(folder, "Erome")
+            os.makedirs(erome_dir, exist_ok=True)
+            self.download_dir = erome_dir
             self.dir_path.setText(self.download_dir)
             self.open_dir_btn.setEnabled(True)
             self.append_output(f"📁 Download directory set to: {self.download_dir}\n")
+            self.set_erome_folder_icon(erome_dir)
 
     def open_directory(self):
         if self.download_dir and os.path.exists(self.download_dir):
@@ -583,10 +652,31 @@ class GalleryDLGUI(QMainWindow):
     def set_urls_text(self, url):
         self.url_entry.setPlainText(url)
 
+    def _deduplicate_urls(self, urls):
+        seen = set()
+        unique = []
+        duplicates = []
+        for url in urls:
+            if url in seen:
+                duplicates.append(url)
+            else:
+                seen.add(url)
+                unique.append(url)
+        if duplicates:
+            dup_msg = f"⚠️ Removed {len(duplicates)} duplicate URL(s): " + ", ".join(duplicates)
+            self.append_output(dup_msg + "\n")
+        return unique
+
     def start_download(self):
         urls = self.get_urls()
         if not urls:
             QMessageBox.warning(self, "Error", "Please enter at least one URL.")
+            return
+
+        urls = self._deduplicate_urls(urls)
+
+        if not urls:
+            QMessageBox.warning(self, "Error", "All URLs are duplicates. Nothing to download.")
             return
 
         if not self.download_dir:
@@ -608,7 +698,7 @@ class GalleryDLGUI(QMainWindow):
         self.output_area.clear()
         self.progress_label.setText("Downloading...")
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # Indeterminate mode
+        self.progress_bar.setRange(0, 0)
         self.stop_flag.clear()
 
         self.workers = []
@@ -632,8 +722,11 @@ class GalleryDLGUI(QMainWindow):
             if not self.url_queue or self.stop_flag.is_set():
                 return
             url = self.url_queue.pop(0)
-            worker = GalleryDLWorker([url], self.download_dir, self.signals,
-                                     self.stop_flag, media_type, self.debug_mode, num_threads)
+            worker = GalleryDLWorker(
+                [url], self.download_dir, self.signals,
+                self.stop_flag, media_type, self.debug_mode,
+                num_threads, self.skip_existing
+            )
             worker.signals.finished.connect(worker_finished)
             worker.start()
             self.workers.append(worker)
@@ -711,16 +804,38 @@ if __name__ == "__main__":
     if sys.platform == 'win32':
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EroMeDownloader.RJ.1.0.5")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EroMeDownloader.RJ.1.0.6")
         except:
             pass
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
+    # Splash screen
+    splash_pix = QPixmap()
     base_path = os.path.dirname(os.path.abspath(__file__))
-    icon_path = os.path.join(base_path, "assets", "icon.png")
+    splash_path = os.path.join(base_path, "assets", "splash.png")
+    if os.path.exists(splash_path):
+        splash_pix.load(splash_path)
+    else:
+        icon_path = os.path.join(base_path, "assets", "icon.png")
+        if os.path.exists(icon_path):
+            splash_pix.load(icon_path)
+        else:
+            splash_pix = QPixmap(400, 200)
+            splash_pix.fill(QColor(13, 13, 13))
+            painter = QPainter(splash_pix)
+            painter.setPen(QColor(245, 124, 0))
+            painter.setFont(QFont("Arial", 16))
+            painter.drawText(splash_pix.rect(), Qt.AlignCenter, "EroMe Downloader\nLoading...")
+            painter.end()
 
+    splash = QSplashScreen(splash_pix)
+    splash.show()
+    app.processEvents()
+
+    # Application icon
+    icon_path = os.path.join(base_path, "assets", "icon.png")
     if os.path.exists(icon_path):
         icon = QIcon(icon_path)
     else:
@@ -731,5 +846,7 @@ if __name__ == "__main__":
     app.setWindowIcon(icon)
     window = GalleryDLGUI()
     window.setWindowIcon(icon)
+
+    splash.finish(window)
     window.show()
     sys.exit(app.exec_())
