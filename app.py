@@ -5,18 +5,27 @@ import os
 import json
 import re
 import tempfile
+import time
 from pathlib import Path
+from enum import Enum
+from datetime import datetime
+import urllib.request
+import urllib.error
+from html.parser import HTMLParser
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox,
     QProgressBar, QListWidget, QDialog, QGroupBox, QSplitter,
-    QCheckBox, QPlainTextEdit, QSplashScreen
+    QCheckBox, QPlainTextEdit, QSplashScreen, QComboBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QLineEdit as QLineEditSearch,
+    QSystemTrayIcon, QMenu, QStyle, QDialogButtonBox
 )
-from PyQt5.QtCore import pyqtSignal, QObject, Qt
-from PyQt5.QtGui import QFont, QPalette, QColor, QIcon, QPixmap, QPainter
+from PyQt5.QtCore import pyqtSignal, QObject, Qt, QSettings, QRect, QPoint
+from PyQt5.QtGui import QFont, QPalette, QColor, QIcon, QPixmap, QPainter, QTextCursor, QTextCharFormat, QPen, QBrush
 
 
+# ---------- Helper Functions ----------
 def get_default_downloads_folder():
     if sys.platform == 'win32':
         import ctypes.wintypes
@@ -44,9 +53,224 @@ def get_python_command():
     return sys.executable
 
 
+def gear_icon(size=24):
+    """Create a gear icon using QPainter (no emoji)."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    painter.setPen(QPen(Qt.white, 2))
+    painter.setBrush(QBrush(Qt.white))
+
+    center = QPoint(size // 2, size // 2)
+    radius = size // 2 - 4
+    painter.drawEllipse(center, radius, radius)
+
+    # Draw teeth
+    for angle in range(0, 360, 30):
+        painter.save()
+        painter.translate(center)
+        painter.rotate(angle)
+        rect = QRect(-3, -radius + 2, 6, 6)
+        painter.drawRect(rect)
+        painter.restore()
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+def fetch_page_title(url, timeout=5):
+    """Fetch the title of a webpage from its <title> tag."""
+    class TitleParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.in_title = False
+            self.title = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag.lower() == 'title':
+                self.in_title = True
+
+        def handle_endtag(self, tag):
+            if tag.lower() == 'title':
+                self.in_title = False
+
+        def handle_data(self, data):
+            if self.in_title:
+                if self.title is None:
+                    self.title = data.strip()
+                else:
+                    self.title += data.strip()
+
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+            parser = TitleParser()
+            parser.feed(html)
+            if parser.title:
+                return parser.title
+            else:
+                return url.rstrip('/').split('/')[-1] or url
+    except Exception:
+        return url.rstrip('/').split('/')[-1] or url
+
+
+# ---------- Settings Dialog ----------
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(400)
+        self.setup_ui()
+        self.load_settings()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Media type group
+        media_group = QGroupBox("Media Type")
+        media_layout = QVBoxLayout()
+        self.checkbox_images = QCheckBox("Images only")
+        self.checkbox_images.setIcon(self.style().standardIcon(QStyle.SP_FileIcon))
+        self.checkbox_videos = QCheckBox("Videos only")
+        self.checkbox_videos.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        media_layout.addWidget(self.checkbox_images)
+        media_layout.addWidget(self.checkbox_videos)
+        media_group.setLayout(media_layout)
+        layout.addWidget(media_group)
+
+        # Debug mode
+        self.debug_checkbox = QCheckBox("Debug Mode")
+        self.debug_checkbox.setIcon(self.style().standardIcon(QStyle.SP_DialogHelpButton))
+        layout.addWidget(self.debug_checkbox)
+
+        # Skip existing files
+        self.skip_checkbox = QCheckBox("Skip existing files")
+        self.skip_checkbox.setIcon(self.style().standardIcon(QStyle.SP_ArrowForward))
+        layout.addWidget(self.skip_checkbox)
+
+        # Log level
+        log_layout = QHBoxLayout()
+        log_icon = self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
+        log_icon_label = QLabel()
+        log_icon_label.setPixmap(log_icon.pixmap(16, 16))
+        log_layout.addWidget(log_icon_label)
+        log_layout.addWidget(QLabel("Log level:"))
+        self.log_level_combo = QComboBox()
+        self.log_level_combo.addItems(["All", "Info", "Debug", "Error"])
+        log_layout.addWidget(self.log_level_combo)
+        log_layout.addStretch()
+        layout.addLayout(log_layout)
+
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.setStyleSheet("""
+            QDialog { background-color: #1e1e1e; color: #f0f0f0; }
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #3a3a3a;
+                border-radius: 8px;
+                margin-top: 12px;
+                background-color: #1a1a1a;
+                color: #f0f0f0;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 8px;
+                background-color: #1a1a1a;
+                color: #f57c00;
+            }
+            QCheckBox { color: #f0f0f0; spacing: 8px; }
+            QCheckBox::indicator {
+                width: 18px; height: 18px; border-radius: 4px;
+                border: 1px solid #3a3a3a;
+                background-color: #2a2a2a;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #f57c00;
+                border: 1px solid #f57c00;
+            }
+            QComboBox {
+                background-color: #2a2a2a;
+                color: #f0f0f0;
+                border: 1px solid #3a3a3a;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2a2a2a;
+                color: #f0f0f0;
+                selection-background-color: #f57c00;
+            }
+            QPushButton {
+                background-color: #f57c00;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #ffa726; }
+            QPushButton:pressed { background-color: #e65100; }
+        """)
+
+    def load_settings(self):
+        settings = QSettings('settings.ini', QSettings.IniFormat)
+        media_type = settings.value('media_type', 'all')
+        if media_type == 'images':
+            self.checkbox_images.setChecked(True)
+            self.checkbox_videos.setChecked(False)
+        elif media_type == 'videos':
+            self.checkbox_images.setChecked(False)
+            self.checkbox_videos.setChecked(True)
+        else:
+            self.checkbox_images.setChecked(True)
+            self.checkbox_videos.setChecked(True)
+
+        self.debug_checkbox.setChecked(settings.value('debug', False, type=bool))
+        self.skip_checkbox.setChecked(settings.value('skip', True, type=bool))
+        log_level = settings.value('log_level', 'All')
+        index = self.log_level_combo.findText(log_level)
+        if index >= 0:
+            self.log_level_combo.setCurrentIndex(index)
+
+    def save_settings(self):
+        settings = QSettings('settings.ini', QSettings.IniFormat)
+        if self.checkbox_images.isChecked() and self.checkbox_videos.isChecked():
+            media_type = 'all'
+        elif self.checkbox_images.isChecked() and not self.checkbox_videos.isChecked():
+            media_type = 'images'
+        elif self.checkbox_videos.isChecked() and not self.checkbox_images.isChecked():
+            media_type = 'videos'
+        else:
+            media_type = 'all'
+            self.checkbox_images.setChecked(True)
+            self.checkbox_videos.setChecked(True)
+
+        settings.setValue('media_type', media_type)
+        settings.setValue('debug', self.debug_checkbox.isChecked())
+        settings.setValue('skip', self.skip_checkbox.isChecked())
+        settings.setValue('log_level', self.log_level_combo.currentText())
+
+    def accept(self):
+        self.save_settings()
+        if self.parent:
+            self.parent.load_settings()
+        super().accept()
+
+
+# ---------- Worker ----------
 class WorkerSignals(QObject):
-    output = pyqtSignal(str)
-    progress = pyqtSignal(int, int)
+    output = pyqtSignal(str, str)
+    progress = pyqtSignal(int)
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
@@ -57,12 +281,16 @@ class GalleryDLWorker(threading.Thread):
     ALL_EXTENSIONS = IMAGE_EXTENSIONS + VIDEO_EXTENSIONS
 
     def __init__(self, urls, directory, signals, stop_flag, media_type='all',
-                 debug=False, num_threads=4, skip_existing=False):
+                 debug=False, num_threads=4, skip_existing=False, resumed=False):
         super().__init__()
         self.urls = urls
+        self.url = urls[0]  # single URL for this worker
         self.directory = directory
         self.signals = signals
         self.stop_flag = stop_flag
+        self._stop_requested = False
+        self.stopped_by_user = False
+        self.completed = False
         self.media_type = media_type
         self.process = None
         self.debug = debug
@@ -71,9 +299,9 @@ class GalleryDLWorker(threading.Thread):
         self.num_threads = num_threads
         self.skip_existing = skip_existing
         self._skip_folder_printed = False
+        self.resumed = resumed  # if True, don't print "Processing: URL"
 
     def create_config(self, url, skip_existing=False):
-        """Create a temporary config file with Erome directory template and/or skip option."""
         config = {}
         if "erome.com" in url.lower():
             config["extractor"] = {"erome": {"directory": ["{title}"]}}
@@ -99,7 +327,6 @@ class GalleryDLWorker(threading.Thread):
 
     def run(self):
         try:
-            # Check gallery-dl availability
             check = subprocess.run([self.python_cmd, '-m', 'gallery_dl', '--version'],
                                    capture_output=True, text=True)
             if check.returncode != 0:
@@ -110,10 +337,12 @@ class GalleryDLWorker(threading.Thread):
             file_saved_pattern = re.compile(r'^([A-Za-z]:[\\/]|/).+' + pattern, re.IGNORECASE)
 
             for url in self.urls:
-                if self.stop_flag.is_set():
+                if self._stop_requested or self.stop_flag.is_set():
                     break
 
-                self.signals.output.emit(f"\n📥 Processing: {url}\n")
+                # Only print "Processing" if this is a fresh start, not a resume
+                if not self.resumed:
+                    self.signals.output.emit(f"\n📥 Processing: {url}\n", 'info')
                 self._skip_folder_printed = False
 
                 cmd = [self.python_cmd, "-m", "gallery_dl", "-d", self.directory]
@@ -121,9 +350,8 @@ class GalleryDLWorker(threading.Thread):
                 if self.num_threads > 1:
                     cmd.extend(["-j", str(self.num_threads)])
                     if self.debug:
-                        self.signals.output.emit(f"⚙️ Using {self.num_threads} parallel threads\n")
+                        self.signals.output.emit(f"⚙️ Using {self.num_threads} parallel threads\n", 'debug')
 
-                # Create config file if needed (for Erome folder or skip)
                 config_path = self.create_config(url, self.skip_existing)
                 if config_path:
                     cmd.extend(["-c", config_path])
@@ -132,12 +360,12 @@ class GalleryDLWorker(threading.Thread):
                 if filter_expr:
                     cmd.extend(["--filter", filter_expr])
                     if self.debug:
-                        self.signals.output.emit(f"🔍 Filter: {filter_expr}\n")
+                        self.signals.output.emit(f"🔍 Filter: {filter_expr}\n", 'debug')
 
                 cmd.append(url)
 
                 if self.debug:
-                    self.signals.output.emit(f"🐞 Running: {' '.join(cmd)}\n")
+                    self.signals.output.emit(f"🐞 Running: {' '.join(cmd)}\n", 'debug')
 
                 self.process = subprocess.Popen(
                     cmd,
@@ -151,8 +379,8 @@ class GalleryDLWorker(threading.Thread):
                 downloaded_files = 0
 
                 for line in self.process.stdout:
-                    if self.stop_flag.is_set():
-                        self.process.terminate()
+                    if self._stop_requested or self.stop_flag.is_set():
+                        self._terminate_process()
                         break
 
                     line_stripped = line.strip()
@@ -162,27 +390,45 @@ class GalleryDLWorker(threading.Thread):
                         if path_part and not self._skip_folder_printed:
                             folder = os.path.basename(os.path.dirname(path_part))
                             if folder:
-                                self.signals.output.emit(f"⏭️ Skipping files in folder: {folder} (already exist)\n")
+                                self.signals.output.emit(f"⏭️ Skipping files in folder: {folder} (already exist)\n", 'info')
                                 self._skip_folder_printed = True
                         continue
 
                     if self.debug:
-                        self.signals.output.emit(f"[RAW] {line}")
+                        self.signals.output.emit(f"[RAW] {line}", 'debug')
+
+                    level = 'info'
+                    if line_stripped.startswith('ERROR') or 'error' in line_stripped.lower():
+                        level = 'error'
+                    elif 'skipping' in line_stripped.lower() or 'skip' in line_stripped.lower():
+                        level = 'info'
+                    elif 'downloaded' in line_stripped.lower():
+                        level = 'info'
 
                     if file_saved_pattern.match(line_stripped):
                         downloaded_files += 1
-                        self.signals.output.emit(f"📄 Downloaded: {downloaded_files} files so far\n")
+                        self.signals.progress.emit(downloaded_files)
+                        self.signals.output.emit(f"📄 Downloaded: {downloaded_files} files so far\n", 'info')
 
-                    if not self.debug:
-                        self.signals.output.emit(line)
+                    self.signals.output.emit(line, level)
 
                 if self.process:
-                    self.process.wait()
+                    try:
+                        self.process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        self._terminate_process()
+                    finally:
+                        self.process = None
 
-            if not self.stop_flag.is_set():
-                self.signals.finished.emit()
+            # If we completed without being stopped, mark as completed
+            if not self._stop_requested and not self.stop_flag.is_set():
+                self.completed = True
+
+            if self._stop_requested or self.stop_flag.is_set():
+                # Don't emit "Download stopped by user" here; let the main logic handle it
+                pass
             else:
-                self.signals.output.emit("\n⏹️ Download stopped by user.\n")
+                self.signals.output.emit("\n✅ URL finished.\n", 'info')
 
         except Exception as e:
             self.signals.error.emit(str(e))
@@ -193,39 +439,78 @@ class GalleryDLWorker(threading.Thread):
                         os.remove(cfg)
                     except:
                         pass
+            self.signals.finished.emit()
+
+    def _terminate_process(self):
+        if self.process:
+            try:
+                self.process.terminate()
+                time.sleep(0.5)
+                if self.process.poll() is None:
+                    self.process.kill()
+                if self.process.stdout:
+                    self.process.stdout.close()
+            except Exception:
+                pass
 
     def stop(self):
-        if self.process:
-            self.process.terminate()
+        self._stop_requested = True
+        self.stopped_by_user = True
+        self._terminate_process()
 
 
+# ---------- History Dialog ----------
 class HistoryDialog(QDialog):
     def __init__(self, history, history_file, parent=None):
         super().__init__(parent)
         self.history = history
         self.history_file = history_file
         self.parent = parent
-        self.setWindowTitle("📜 Download History")
-        self.setMinimumSize(500, 400)
+        self.filtered_history = history[:]
+        self.setWindowTitle("Download History")
+        self.setMinimumSize(700, 500)
         self.setup_ui()
+        self.populate_table()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        self.list_widget = QListWidget()
-        self.list_widget.setAlternatingRowColors(True)
-        for url in self.history:
-            self.list_widget.addItem(url)
-        layout.addWidget(self.list_widget)
+        search_layout = QHBoxLayout()
+        search_label = QLabel("Filter:")
+        self.search_box = QLineEditSearch()
+        self.search_box.setPlaceholderText("Search URLs or titles...")
+        self.search_box.textChanged.connect(self.filter_history)
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.search_box)
+        layout.addLayout(search_layout)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Date", "Title", "URL"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.setAlternatingRowColors(True)
+        layout.addWidget(self.table)
 
         btn_layout = QHBoxLayout()
-        redownload_btn = QPushButton("🔁 Re-download Selected")
+        redownload_btn = QPushButton("Re-download Selected")
+        redownload_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         redownload_btn.clicked.connect(self.redownload)
-        remove_btn = QPushButton("❌ Remove Selected")
+        redownload_btn.setToolTip("Re-download the selected URL")
+
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
         remove_btn.clicked.connect(self.remove_selected)
-        clear_btn = QPushButton("🗑️ Clear All History")
+        remove_btn.setToolTip("Remove the selected entry from history")
+
+        clear_btn = QPushButton("Clear All")
+        if hasattr(QStyle, 'SP_TrashIcon'):
+            clear_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
+        else:
+            clear_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
         clear_btn.clicked.connect(self.clear_all)
+        clear_btn.setToolTip("Clear all history entries")
 
         for btn in (redownload_btn, remove_btn, clear_btn):
             btn.setCursor(Qt.PointingHandCursor)
@@ -246,29 +531,70 @@ class HistoryDialog(QDialog):
 
         self.setStyleSheet("""
             QDialog { background-color: #1e1e1e; color: #f0f0f0; }
-            QListWidget {
+            QTableWidget {
                 background-color: #2d2d30;
                 color: #f0f0f0;
                 border: 1px solid #3a3a3a;
                 border-radius: 8px;
                 font-family: monospace;
-                padding: 5px;
+                gridline-color: #3a3a3a;
             }
-            QListWidget::item:selected { background-color: #f57c00; color: white; }
+            QTableWidget::item:selected { background-color: #f57c00; color: white; }
+            QLineEdit {
+                background-color: #2d2d30;
+                color: #f0f0f0;
+                border: 1px solid #3a3a3a;
+                border-radius: 6px;
+                padding: 6px;
+            }
         """)
 
+    def populate_table(self, history_list=None):
+        if history_list is None:
+            history_list = self.filtered_history
+        self.table.setRowCount(len(history_list))
+        for row, entry in enumerate(history_list):
+            timestamp = entry.get('timestamp', 'Unknown')
+            title = entry.get('title', 'Unknown')
+            url = entry.get('url', '')
+            if timestamp != 'Unknown':
+                try:
+                    dt = datetime.fromtimestamp(timestamp)
+                    timestamp = dt.strftime('%Y-%m-%d %H:%M')
+                except:
+                    pass
+            self.table.setItem(row, 0, QTableWidgetItem(timestamp))
+            self.table.setItem(row, 1, QTableWidgetItem(title))
+            self.table.setItem(row, 2, QTableWidgetItem(url))
+        self.table.resizeColumnsToContents()
+
+    def filter_history(self, text):
+        if not text:
+            self.filtered_history = self.history[:]
+        else:
+            text_lower = text.lower()
+            self.filtered_history = [
+                e for e in self.history
+                if text_lower in e.get('url', '').lower() or text_lower in e.get('title', '').lower()
+            ]
+        self.populate_table()
+
     def redownload(self):
-        current = self.list_widget.currentItem()
-        if current:
-            self.parent.set_urls_text(current.text())
-            self.accept()
-            self.parent.start_download()
+        current_row = self.table.currentRow()
+        if current_row >= 0 and current_row < len(self.filtered_history):
+            url = self.filtered_history[current_row].get('url', '')
+            if url:
+                self.parent.set_urls_text(url)
+                self.accept()
+                self.parent.start_download()
 
     def remove_selected(self):
-        current = self.list_widget.currentRow()
-        if current >= 0:
-            self.list_widget.takeItem(current)
-            self.history.pop(current)
+        current_row = self.table.currentRow()
+        if current_row >= 0 and current_row < len(self.filtered_history):
+            entry = self.filtered_history[current_row]
+            self.history.remove(entry)
+            self.filtered_history.pop(current_row)
+            self.populate_table()
             self.save_history()
 
     def clear_all(self):
@@ -276,7 +602,8 @@ class HistoryDialog(QDialog):
                                        QMessageBox.Yes | QMessageBox.No)
         if confirm == QMessageBox.Yes:
             self.history.clear()
-            self.list_widget.clear()
+            self.filtered_history.clear()
+            self.populate_table()
             self.save_history()
 
     def save_history(self):
@@ -284,8 +611,15 @@ class HistoryDialog(QDialog):
             json.dump(self.history, f, indent=2)
 
 
+# ---------- Main GUI ----------
+class DownloadState(Enum):
+    IDLE = 0
+    DOWNLOADING = 1
+    PAUSED = 2
+    STOPPED = 3
+
+
 class GalleryDLGUI(QMainWindow):
-    # ---------- ORANGE & BLACK THEME ----------
     THEME = {
         'bg_main': '#0d0d0d',
         'bg_panel': '#1a1a1a',
@@ -302,7 +636,6 @@ class GalleryDLGUI(QMainWindow):
         'scrollbar_handle': '#4a4a4a',
         'scrollbar_handle_hover': '#5a5a5a',
     }
-    # ----------------------------------------------
 
     def __init__(self):
         super().__init__()
@@ -317,57 +650,86 @@ class GalleryDLGUI(QMainWindow):
         self.completed_workers = 0
         self.url_queue = []
         self.signals = None
+
+        self.media_type = 'all'
         self.debug_mode = False
         self.skip_existing = True
+        self.log_level = 'All'
+
+        self.download_state = DownloadState.IDLE
+
+        self.log_entries = []
+        self.current_files = 0
+
+        # Flag to avoid printing folder messages more than once per session
+        self._folder_message_done = False
 
         self.load_history()
         self.setup_ui()
         self.apply_theme()
+        self.load_settings()
+        self.update_ui_state()
 
         default_dir = get_default_downloads_folder()
         erome_dir = os.path.join(default_dir, "Erome")
-        os.makedirs(erome_dir, exist_ok=True)
+        # Only print folder message if not shown yet in this session
+        if not self._folder_message_done:
+            if os.path.exists(erome_dir):
+                self.append_output(f"ℹ️ Erome folder already exists at: {erome_dir}\n", 'info')
+            else:
+                os.makedirs(erome_dir, exist_ok=True)
+                self.append_output(f"✅ Created Erome folder at: {erome_dir}\n", 'info')
+            self._folder_message_done = True
+        else:
+            # Ensure folder exists even if we skip the message
+            os.makedirs(erome_dir, exist_ok=True)
+
         self.download_dir = erome_dir
         self.dir_path.setText(self.download_dir)
         self.open_dir_btn.setEnabled(True)
         self.set_erome_folder_icon(erome_dir)
 
-    def set_erome_folder_icon(self, folder_path):
-        """Set custom icon for the Erome folder (Windows only)."""
-        if sys.platform != 'win32':
-            self.append_output("ℹ️ Custom folder icons are only supported on Windows.\n")
-            return
+        self.tray_icon = None
+        self.setup_tray_icon()
 
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
-        if not os.path.exists(icon_path):
-            self.append_output(f"⚠️ Icon file not found: {icon_path}\n")
-            return
+    def load_settings(self):
+        settings = QSettings('settings.ini', QSettings.IniFormat)
+        self.media_type = settings.value('media_type', 'all')
+        self.debug_mode = settings.value('debug', False, type=bool)
+        self.skip_existing = settings.value('skip', True, type=bool)
+        self.log_level = settings.value('log_level', 'All')
+        self.on_log_level_changed()
 
-        try:
-            import ctypes
-            from ctypes import wintypes
+    def setup_tray_icon(self):
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            icon = QIcon(self.get_icon_path())
+            self.tray_icon = QSystemTrayIcon(icon, self)
+            self.tray_icon.setToolTip("EroMe Downloader")
+            menu = QMenu()
+            show_action = menu.addAction("Show")
+            show_action.triggered.connect(self.show_window)
+            quit_action = menu.addAction("Quit")
+            quit_action.triggered.connect(QApplication.quit)
+            self.tray_icon.setContextMenu(menu)
+            self.tray_icon.show()
 
-            os.makedirs(folder_path, exist_ok=True)
+    def show_window(self):
+        self.showNormal()
+        self.activateWindow()
 
-            ini_path = os.path.join(folder_path, 'desktop.ini')
-            with open(ini_path, 'w') as f:
-                f.write('[.ShellClassInfo]\n')
-                f.write(f'IconResource={os.path.abspath(icon_path)},0\n')
+    def get_icon_path(self):
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_path, "assets", "icon.png")
+        if os.path.exists(icon_path):
+            return icon_path
+        return None
 
-            FILE_ATTRIBUTE_READONLY = 0x1
-            FILE_ATTRIBUTE_SYSTEM = 0x4
-            ctypes.windll.kernel32.SetFileAttributesW(folder_path, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM)
-            ctypes.windll.kernel32.SetFileAttributesW(ini_path, 0x2 | 0x4)
+    def notify_finished(self):
+        if self.tray_icon:
+            self.tray_icon.showMessage("Download Complete", "All files have been downloaded successfully.",
+                                       QSystemTrayIcon.Information, 5000)
 
-            SHCNE_ASSOCCHANGED = 0x08000000
-            SHCNF_IDLIST = 0x0000
-            ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
-
-            self.append_output(f"✅ Folder icon set for: {folder_path}\n")
-
-        except Exception as e:
-            self.append_output(f"❌ Failed to set folder icon: {e}\n")
-
+    # ---------- UI Setup ----------
     def setup_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -380,41 +742,37 @@ class GalleryDLGUI(QMainWindow):
         left_layout.setSpacing(15)
         left_layout.setContentsMargins(15, 15, 15, 15)
 
-        url_group = QGroupBox("🔗 URLs (one per line)")
+        # URL group
+        url_group = QGroupBox("URLs (one per line)")
+        url_group.setToolTip("Enter one URL per line. Duplicates will be removed automatically.")
         url_layout = QVBoxLayout()
         self.url_entry = QPlainTextEdit()
         self.url_entry.setPlaceholderText(
             "Enter one URL per line\nExample:\nhttps://erome.com/a/example1"
         )
         self.url_entry.setMaximumHeight(150)
+        self.url_entry.setToolTip("Paste or type URLs, each on a new line.")
         url_layout.addWidget(self.url_entry)
         url_group.setLayout(url_layout)
         left_layout.addWidget(url_group)
 
-        media_group = QGroupBox("🎞️ Media Type")
-        media_layout = QHBoxLayout()
-        self.checkbox_images = QCheckBox("🖼️ Images only")
-        self.checkbox_videos = QCheckBox("🎥 Videos only")
-        self.checkbox_images.setChecked(True)
-        self.checkbox_videos.setChecked(True)
-        self.checkbox_images.toggled.connect(self._ensure_one_checked)
-        self.checkbox_videos.toggled.connect(self._ensure_one_checked)
-        media_layout.addWidget(self.checkbox_images)
-        media_layout.addWidget(self.checkbox_videos)
-        media_layout.addStretch()
-        media_group.setLayout(media_layout)
-        left_layout.addWidget(media_group)
-
-        dir_group = QGroupBox("📂 Download Directory")
+        # Directory
+        dir_group = QGroupBox("Download Directory")
+        dir_group.setToolTip("Folder where downloaded files will be saved.")
         dir_layout = QVBoxLayout()
         self.dir_path = QLineEdit()
         self.dir_path.setReadOnly(True)
+        self.dir_path.setToolTip("Current download directory (automatically set to Downloads/Erome)")
         dir_btn_layout = QHBoxLayout()
-        browse_btn = QPushButton("📁 Browse...")
+        browse_btn = QPushButton("Browse...")
+        browse_btn.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
         browse_btn.clicked.connect(self.select_directory)
-        self.open_dir_btn = QPushButton("📂 Open Folder")
+        browse_btn.setToolTip("Choose a different download folder.")
+        self.open_dir_btn = QPushButton("Open Folder")
+        self.open_dir_btn.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
         self.open_dir_btn.clicked.connect(self.open_directory)
         self.open_dir_btn.setEnabled(False)
+        self.open_dir_btn.setToolTip("Open the download folder in file explorer.")
         dir_btn_layout.addWidget(browse_btn)
         dir_btn_layout.addWidget(self.open_dir_btn)
         dir_layout.addWidget(self.dir_path)
@@ -422,57 +780,100 @@ class GalleryDLGUI(QMainWindow):
         dir_group.setLayout(dir_layout)
         left_layout.addWidget(dir_group)
 
-        progress_group = QGroupBox("📊 Progress")
+        # Progress
+        progress_group = QGroupBox("Progress")
+        progress_group.setToolTip("Shows download progress (number of files downloaded).")
         progress_layout = QVBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
+        self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
+        self.progress_bar.setToolTip("Indeterminate progress bar while downloading.")
         self.progress_label = QLabel("Ready")
         self.progress_label.setAlignment(Qt.AlignCenter)
+        self.progress_label.setToolTip("Status and file count.")
         progress_layout.addWidget(self.progress_label)
         progress_layout.addWidget(self.progress_bar)
         progress_group.setLayout(progress_layout)
         left_layout.addWidget(progress_group)
 
-        btn_layout = QVBoxLayout()
-        self.download_btn = QPushButton("🚀 Start Download")
-        self.download_btn.clicked.connect(self.start_download)
-        self.stop_btn = QPushButton("⏹️ Stop Download")
-        self.stop_btn.setEnabled(False)
+        # Control buttons
+        control_group = QGroupBox("Controls")
+        control_layout = QHBoxLayout()
+        self.start_btn = QPushButton("Start")
+        self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.start_btn.clicked.connect(self.on_start_clicked)
+        self.start_btn.setToolTip("Start downloading (or resume if paused).")
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+        self.pause_btn.clicked.connect(self.pause_download)
+        self.pause_btn.setToolTip("Pause the current download (resume later).")
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
         self.stop_btn.clicked.connect(self.stop_download)
-        self.clear_output_btn = QPushButton("🗑️ Clear Log")
-        self.clear_output_btn.clicked.connect(self.clear_output)
-        self.history_btn = QPushButton("📜 History")
-        self.history_btn.clicked.connect(self.show_history)
+        self.stop_btn.setToolTip("Stop all downloads (cannot resume).")
 
-        for btn in (self.download_btn, self.stop_btn, self.clear_output_btn, self.history_btn):
+        for btn in (self.start_btn, self.pause_btn, self.stop_btn):
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setMinimumHeight(40)
-            btn_layout.addWidget(btn)
+            btn.setMinimumHeight(36)
+        control_layout.addWidget(self.start_btn)
+        control_layout.addWidget(self.pause_btn)
+        control_layout.addWidget(self.stop_btn)
+        control_layout.addStretch()
+        control_group.setLayout(control_layout)
+        left_layout.addWidget(control_group)
 
-        options_layout = QHBoxLayout()
-        self.debug_checkbox = QCheckBox("🐞 Debug Mode")
-        self.debug_checkbox.stateChanged.connect(self.toggle_debug)
-        options_layout.addWidget(self.debug_checkbox)
+        # Extra buttons
+        extra_layout = QHBoxLayout()
+        self.clear_output_btn = QPushButton("Clear Log")
+        self.clear_output_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
+        self.clear_output_btn.clicked.connect(self.clear_output)
+        self.clear_output_btn.setToolTip("Clear the log output (confirmation required).")
+        self.history_btn = QPushButton("History")
+        self.history_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        self.history_btn.clicked.connect(self.show_history)
+        self.history_btn.setToolTip("View download history with timestamps and search.")
 
-        self.skip_checkbox = QCheckBox("⏭️ Skip existing files")
-        self.skip_checkbox.setChecked(True)
-        self.skip_checkbox.stateChanged.connect(self.toggle_skip)
-        options_layout.addWidget(self.skip_checkbox)
-        options_layout.addStretch()
-        btn_layout.addLayout(options_layout)
+        for btn in (self.clear_output_btn, self.history_btn):
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setMinimumHeight(30)
+        extra_layout.addWidget(self.clear_output_btn)
+        extra_layout.addWidget(self.history_btn)
+        extra_layout.addStretch()
 
-        left_layout.addLayout(btn_layout)
+        left_layout.addLayout(extra_layout)
         left_layout.addStretch()
 
+        # Settings button at bottom left – custom icon with fallback
+        bottom_layout = QHBoxLayout()
+        self.settings_btn = QPushButton()
+        # Try to load custom settings icon from assets/setico.png
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        settings_icon_path = os.path.join(base_path, "assets", "setico.png")
+        if os.path.exists(settings_icon_path):
+            self.settings_btn.setIcon(QIcon(settings_icon_path))
+        else:
+            self.settings_btn.setIcon(gear_icon())  # fallback
+        self.settings_btn.setToolTip("Open settings dialog")
+        self.settings_btn.clicked.connect(self.show_settings)
+        self.settings_btn.setCursor(Qt.PointingHandCursor)
+        self.settings_btn.setMinimumHeight(30)
+        self.settings_btn.setFixedWidth(40)
+        bottom_layout.addWidget(self.settings_btn)
+        bottom_layout.addStretch()
+        left_layout.addLayout(bottom_layout)
+
+        # Right panel: log
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(10, 15, 15, 15)
-        log_group = QGroupBox("📄 Live Log")
+        log_group = QGroupBox("Live Log")
+        log_group.setToolTip("Shows download log with color-coded messages.")
         log_layout = QVBoxLayout()
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
         self.output_area.setFont(QFont("Courier New", 10))
+        self.output_area.setToolTip("Log output. Colors: Green=Downloaded, Orange=Skipped, Red=Errors, White/Gray=Info.")
         log_layout.addWidget(self.output_area)
         log_group.setLayout(log_layout)
         right_layout.addWidget(log_group)
@@ -485,22 +886,26 @@ class GalleryDLGUI(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(main_splitter)
 
-    def _ensure_one_checked(self):
-        if not self.checkbox_images.isChecked() and not self.checkbox_videos.isChecked():
-            self.checkbox_images.setChecked(True)
-            self.checkbox_videos.setChecked(True)
+    def show_settings(self):
+        dialog = SettingsDialog(self)
+        dialog.exec_()
+        self.update_ui_state()
+        self.on_log_level_changed()
 
+    # ---------- Getters ----------
     def get_media_type(self):
-        images = self.checkbox_images.isChecked()
-        videos = self.checkbox_videos.isChecked()
-        if images and videos:
-            return 'all'
-        elif images:
-            return 'images'
-        elif videos:
-            return 'videos'
-        return 'all'
+        return self.media_type
 
+    def get_debug_mode(self):
+        return self.debug_mode
+
+    def get_skip_existing(self):
+        return self.skip_existing
+
+    def get_log_level(self):
+        return self.log_level
+
+    # ---------- Theme ----------
     def generate_stylesheet(self):
         theme = self.THEME
         return f"""
@@ -520,14 +925,14 @@ class GalleryDLGUI(QMainWindow):
                 background-color: {theme['bg_panel']};
                 color: {theme['highlight']};
             }}
-            QLineEdit, QPlainTextEdit, QTextEdit {{
+            QLineEdit, QPlainTextEdit, QTextEdit, QComboBox {{
                 border: 1px solid {theme['border']};
                 border-radius: 6px;
                 background-color: {theme['bg_entry']};
                 color: {theme['text']};
                 selection-background-color: {theme['highlight']};
             }}
-            QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
+            QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QComboBox:focus {{
                 border: 1px solid {theme['highlight']};
             }}
             QPushButton {{
@@ -560,9 +965,7 @@ class GalleryDLGUI(QMainWindow):
                 spacing: 8px;
             }}
             QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
+                width: 18px; height: 18px; border-radius: 4px;
                 border: 1px solid {theme['border']};
                 background-color: {theme['bg_entry']};
             }}
@@ -602,6 +1005,29 @@ class GalleryDLGUI(QMainWindow):
                 background-color: {theme['bg_main']};
                 color: {theme['text']};
             }}
+            QTableWidget {{
+                background-color: {theme['bg_entry']};
+                color: {theme['text']};
+                border: 1px solid {theme['border']};
+                border-radius: 8px;
+                font-family: monospace;
+                gridline-color: {theme['border']};
+            }}
+            QTableWidget::item:selected {{
+                background-color: {theme['highlight']};
+                color: white;
+            }}
+            QHeaderView::section {{
+                background-color: {theme['bg_panel']};
+                color: {theme['text']};
+                padding: 5px;
+                border: none;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {theme['bg_entry']};
+                color: {theme['text']};
+                selection-background-color: {theme['highlight']};
+            }}
         """
 
     def apply_theme(self):
@@ -619,23 +1045,20 @@ class GalleryDLGUI(QMainWindow):
         palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
         QApplication.instance().setPalette(palette)
 
-    def toggle_debug(self, state):
-        self.debug_mode = (state == Qt.Checked)
-        self.append_output(f"🐞 Debug mode {'ON' if self.debug_mode else 'OFF'}\n")
-
-    def toggle_skip(self, state):
-        self.skip_existing = (state == Qt.Checked)
-        self.append_output(f"⏭️ Skip existing files {'ON' if self.skip_existing else 'OFF'}\n")
-
     def select_directory(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Download Directory")
         if folder:
             erome_dir = os.path.join(folder, "Erome")
-            os.makedirs(erome_dir, exist_ok=True)
+            # Always show folder message when user explicitly selects a new directory
+            if os.path.exists(erome_dir):
+                self.append_output(f"ℹ️ Erome folder already exists at: {erome_dir}\n", 'info')
+            else:
+                os.makedirs(erome_dir, exist_ok=True)
+                self.append_output(f"✅ Created Erome folder at: {erome_dir}\n", 'info')
             self.download_dir = erome_dir
             self.dir_path.setText(self.download_dir)
             self.open_dir_btn.setEnabled(True)
-            self.append_output(f"📁 Download directory set to: {self.download_dir}\n")
+            self.append_output(f"Download directory set to: {self.download_dir}\n", 'info')
             self.set_erome_folder_icon(erome_dir)
 
     def open_directory(self):
@@ -664,111 +1087,71 @@ class GalleryDLGUI(QMainWindow):
                 unique.append(url)
         if duplicates:
             dup_msg = f"⚠️ Removed {len(duplicates)} duplicate URL(s): " + ", ".join(duplicates)
-            self.append_output(dup_msg + "\n")
+            self.append_output(dup_msg + "\n", 'info')
         return unique
 
-    def start_download(self):
-        urls = self.get_urls()
-        if not urls:
-            QMessageBox.warning(self, "Error", "Please enter at least one URL.")
+    # ---------- Logging ----------
+    def append_output(self, text, level='info'):
+        self.log_entries.append((text, level))
+        self._display_log_entry(text, level)
+
+    def _display_log_entry(self, text, level):
+        current_filter = self.log_level.lower()
+        if current_filter != 'all' and level != current_filter:
             return
 
-        urls = self._deduplicate_urls(urls)
+        color = None
 
-        if not urls:
-            QMessageBox.warning(self, "Error", "All URLs are duplicates. Nothing to download.")
-            return
-
-        if not self.download_dir:
-            QMessageBox.warning(self, "Error", "No download directory selected.")
-            return
-
-        media_type = self.get_media_type()
-        num_threads = 1
-        parallel_limit = 10
-
-        os.makedirs(self.download_dir, exist_ok=True)
-
-        for url in urls:
-            self.add_history(url)
-
-        self.download_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.clear_output_btn.setEnabled(False)
-        self.output_area.clear()
-        self.progress_label.setText("Downloading...")
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)
-        self.stop_flag.clear()
-
-        self.workers = []
-        self.active_workers = 0
-        self.completed_workers = 0
-        self.url_queue = urls.copy()
-
-        self.signals = WorkerSignals()
-        self.signals.output.connect(self.append_output)
-        self.signals.error.connect(self.show_error)
-
-        def worker_finished():
-            self.active_workers -= 1
-            self.completed_workers += 1
-            if not self.stop_flag.is_set() and self.url_queue:
-                start_next_worker()
-            elif self.active_workers == 0:
-                self.download_finished()
-
-        def start_next_worker():
-            if not self.url_queue or self.stop_flag.is_set():
-                return
-            url = self.url_queue.pop(0)
-            worker = GalleryDLWorker(
-                [url], self.download_dir, self.signals,
-                self.stop_flag, media_type, self.debug_mode,
-                num_threads, self.skip_existing
-            )
-            worker.signals.finished.connect(worker_finished)
-            worker.start()
-            self.workers.append(worker)
-            self.active_workers += 1
-
-        initial_workers = min(parallel_limit, len(self.url_queue))
-        for _ in range(initial_workers):
-            start_next_worker()
-
-    def stop_download(self):
-        if self.workers:
-            self.stop_flag.set()
-            for w in self.workers:
-                w.stop()
-            self.append_output("\n⏹️ Stopping all downloads...\n")
-            self.progress_label.setText("Stopped")
-            self.progress_bar.setVisible(False)
+        # Specific message color overrides
+        if 'Stopping all downloads' in text:
+            color = 'red'
+        elif 'Pausing...' in text:
+            color = 'orange'
+        elif level == 'error':
+            color = 'red'
+        elif level == 'debug':
+            color = 'gray'
+        elif '✅' in text or 'Downloaded' in text or 'finished' in text.lower():
+            color = 'green'
+        elif 'ℹ️' in text or '⏭️' in text or 'skip' in text.lower():
+            color = 'orange'
         else:
-            self.download_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
+            color = 'white'
 
-    def append_output(self, text):
-        self.output_area.moveCursor(self.output_area.textCursor().End)
-        self.output_area.insertPlainText(text)
-        self.output_area.moveCursor(self.output_area.textCursor().End)
-        scrollbar = self.output_area.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        self.output_area.moveCursor(QTextCursor.End)
+        cursor = self.output_area.textCursor()
+        fmt = QTextCharFormat()
+        if color == 'green':
+            fmt.setForeground(QColor(0, 200, 0))
+        elif color == 'orange':
+            fmt.setForeground(QColor(255, 165, 0))
+        elif color == 'red':
+            fmt.setForeground(QColor(255, 0, 0))
+        elif color == 'gray':
+            fmt.setForeground(QColor(128, 128, 128))
+        else:
+            fmt.setForeground(QColor(240, 240, 240))
+        cursor.mergeCharFormat(fmt)
+        cursor.insertText(text)
+        self.output_area.setTextCursor(cursor)
+        self.output_area.ensureCursorVisible()
 
-    def download_finished(self):
-        self.append_output("\n✅ All downloads completed.\n")
-        self.download_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.clear_output_btn.setEnabled(True)
-        self.progress_label.setText("✅ Completed!")
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        QMessageBox.information(self, "Complete", "All files downloaded.")
+    def refresh_log_display(self):
+        self.output_area.clear()
+        for text, level in self.log_entries:
+            self._display_log_entry(text, level)
 
     def clear_output(self):
-        self.output_area.clear()
+        confirm = QMessageBox.question(self, "Confirm Clear", "Clear all log output?",
+                                       QMessageBox.Yes | QMessageBox.No)
+        if confirm == QMessageBox.Yes:
+            self.log_entries.clear()
+            self.output_area.clear()
 
+    def on_log_level_changed(self):
+        self.refresh_log_display()
+
+    # ---------- History ----------
     def show_history(self):
         dialog = HistoryDialog(self.history, self.history_file, self)
         dialog.exec_()
@@ -777,41 +1160,295 @@ class GalleryDLGUI(QMainWindow):
         if os.path.exists(self.history_file):
             try:
                 with open(self.history_file, "r") as f:
-                    self.history = json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, list) and data:
+                        if isinstance(data[0], str):
+                            self.history = [{"url": url, "timestamp": int(time.time()), "title": "Unknown"} for url in data]
+                        else:
+                            for entry in data:
+                                if 'title' not in entry:
+                                    entry['title'] = 'Unknown'
+                            self.history = data
+                    else:
+                        self.history = []
             except:
                 self.history = []
         else:
             self.history = []
 
-    def add_history(self, url):
-        if url not in self.history:
-            self.history.insert(0, url)
-            if len(self.history) > 100:
-                self.history = self.history[:100]
-            with open(self.history_file, "w") as f:
-                json.dump(self.history, f, indent=2)
+    def add_history(self, url, title):
+        for entry in self.history:
+            if entry.get('url') == url:
+                entry['timestamp'] = int(time.time())
+                entry['title'] = title
+                break
+        else:
+            self.history.insert(0, {"url": url, "timestamp": int(time.time()), "title": title})
+        if len(self.history) > 100:
+            self.history = self.history[:100]
+        with open(self.history_file, "w") as f:
+            json.dump(self.history, f, indent=2)
+
+    # ---------- UI State ----------
+    def set_erome_folder_icon(self, folder_path):
+        if sys.platform != 'win32':
+            self.append_output("ℹ️ Custom folder icons are only supported on Windows.\n", 'info')
+            return
+
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
+        if not os.path.exists(icon_path):
+            self.append_output("ℹ️ Icon file not found, cannot set custom icon.\n", 'info')
+            return
+
+        # Check if desktop.ini already exists and points to the same icon
+        ini_path = os.path.join(folder_path, 'desktop.ini')
+        if os.path.exists(ini_path):
+            try:
+                with open(ini_path, 'r') as f:
+                    content = f.read()
+                # Look for IconResource line
+                if f'IconResource={os.path.abspath(icon_path)},0' in content:
+                    self.append_output(f"ℹ️ Folder icon already set for: {folder_path}\n", 'info')
+                    return
+            except:
+                pass
+
+        # If not set or different, set it
+        try:
+            import ctypes
+            from ctypes import wintypes
+            os.makedirs(folder_path, exist_ok=True)
+            with open(ini_path, 'w') as f:
+                f.write('[.ShellClassInfo]\n')
+                f.write(f'IconResource={os.path.abspath(icon_path)},0\n')
+            FILE_ATTRIBUTE_READONLY = 0x1
+            FILE_ATTRIBUTE_SYSTEM = 0x4
+            ctypes.windll.kernel32.SetFileAttributesW(folder_path, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM)
+            ctypes.windll.kernel32.SetFileAttributesW(ini_path, 0x2 | 0x4)
+            SHCNE_ASSOCCHANGED = 0x08000000
+            SHCNF_IDLIST = 0x0000
+            ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
+            self.append_output(f"✅ Folder icon set for: {folder_path}\n", 'info')
+        except Exception as e:
+            self.append_output(f"❌ Failed to set folder icon: {e}\n", 'error')
+
+    # ---------- State management ----------
+    def update_ui_state(self):
+        if self.download_state == DownloadState.IDLE:
+            self.start_btn.setText("Start")
+            self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.start_btn.setEnabled(True)
+            self.pause_btn.setEnabled(False)
+            self.stop_btn.setEnabled(False)
+            self.clear_output_btn.setEnabled(True)
+            self.progress_label.setText("Ready")
+            self.progress_bar.setVisible(False)
+        elif self.download_state == DownloadState.DOWNLOADING:
+            self.start_btn.setText("Start")
+            self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.start_btn.setEnabled(False)
+            self.pause_btn.setEnabled(True)
+            self.stop_btn.setEnabled(True)
+            self.clear_output_btn.setEnabled(False)
+            self.progress_label.setText(f"Downloading... {self.current_files} files")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+        elif self.download_state == DownloadState.PAUSED:
+            self.start_btn.setText("Resume")
+            self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.start_btn.setEnabled(True)
+            self.pause_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.clear_output_btn.setEnabled(False)
+            self.progress_label.setText(f"Paused ({self.current_files} files)")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+        elif self.download_state == DownloadState.STOPPED:
+            self.start_btn.setText("Start")
+            self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.start_btn.setEnabled(True)
+            self.pause_btn.setEnabled(False)
+            self.stop_btn.setEnabled(False)
+            self.clear_output_btn.setEnabled(True)
+            self.progress_label.setText("Stopped")
+            self.progress_bar.setVisible(False)
+
+    def on_start_clicked(self):
+        if self.download_state == DownloadState.IDLE or self.download_state == DownloadState.STOPPED:
+            self.start_download()
+        elif self.download_state == DownloadState.PAUSED:
+            self.resume_download()
+
+    # ---------- Download control ----------
+    def start_download(self):
+        urls = self.get_urls()
+        if not urls:
+            QMessageBox.warning(self, "Error", "Please enter at least one URL.")
+            return
+
+        urls = self._deduplicate_urls(urls)
+        if not urls:
+            QMessageBox.warning(self, "Error", "All URLs are duplicates. Nothing to download.")
+            return
+
+        if not self.download_dir:
+            QMessageBox.warning(self, "Error", "No download directory selected.")
+            return
+
+        for url in urls:
+            title = fetch_page_title(url)
+            self.add_history(url, title)
+
+        self.download_state = DownloadState.DOWNLOADING
+        self.stop_flag.clear()
+        self.workers = []
+        self.active_workers = 0
+        self.completed_workers = 0
+        self.url_queue = urls.copy()
+        self.update_ui_state()
+
+        self.current_files = 0
+
+        self.signals = WorkerSignals()
+        self.signals.output.connect(self.append_output)
+        self.signals.error.connect(self.show_error)
+        self.signals.progress.connect(self.update_progress)
+
+        parallel_limit = 10
+        num_threads = 1
+        media_type = self.get_media_type()
+        debug = self.get_debug_mode()
+        skip = self.get_skip_existing()
+
+        # Flag to indicate we are starting fresh (not resuming)
+        self._is_resuming = False
+
+        def worker_finished(worker):
+            self.active_workers -= 1
+            self.completed_workers += 1
+            # If worker was stopped by user and not completed, re-add its URL to the queue
+            if worker.stopped_by_user and not worker.completed:
+                self.url_queue.insert(0, worker.url)  # put it back at the front
+                self.append_output(f"↩️ Re-queued URL due to pause: {worker.url}\n", 'info')
+
+            if self.download_state == DownloadState.DOWNLOADING and not self.stop_flag.is_set():
+                if self.url_queue:
+                    self._start_next_worker()
+                else:
+                    if self.active_workers == 0:
+                        self.download_finished()
+            else:
+                if self.active_workers == 0:
+                    if self.download_state == DownloadState.PAUSED:
+                        self.append_output("All downloads paused.\n", 'info')
+                        self.update_ui_state()
+                    elif self.download_state == DownloadState.STOPPED:
+                        self.append_output("All downloads stopped.\n", 'info')
+                        self.reset_to_idle()
+
+        def _start_next_worker(resumed=False):
+            if not self.url_queue or self.stop_flag.is_set():
+                return
+            url = self.url_queue.pop(0)
+            worker = GalleryDLWorker(
+                [url], self.download_dir, self.signals,
+                self.stop_flag, media_type, debug,
+                num_threads, skip, resumed=resumed
+            )
+            # Connect finished signal with the worker instance
+            worker.signals.finished.connect(lambda w=worker: worker_finished(w))
+            worker.start()
+            self.workers.append(worker)
+            self.active_workers += 1
+
+        self._start_next_worker = _start_next_worker
+
+        initial_count = min(parallel_limit, len(self.url_queue))
+        for _ in range(initial_count):
+            _start_next_worker(resumed=False)
+
+    def resume_download(self):
+        if self.download_state != DownloadState.PAUSED:
+            return
+        if not self.url_queue:
+            self.append_output("No remaining URLs to resume.\n", 'info')
+            self.reset_to_idle()
+            return
+
+        self.download_state = DownloadState.DOWNLOADING
+        self.stop_flag.clear()
+        self.update_ui_state()
+
+        # Set resuming flag so workers know they are resumed
+        self._is_resuming = True
+
+        parallel_limit = 10
+        initial_count = min(parallel_limit, len(self.url_queue))
+        for _ in range(initial_count):
+            # Pass resumed=True so workers don't print "Processing: URL"
+            self._start_next_worker(resumed=True)
+
+    def pause_download(self):
+        if self.download_state != DownloadState.DOWNLOADING:
+            return
+        self.download_state = DownloadState.PAUSED
+        self.stop_flag.set()
+        for w in self.workers:
+            w.stop()
+        self.append_output("Pausing... waiting for workers to finish.\n", 'info')
+
+    def stop_download(self):
+        if self.download_state not in (DownloadState.DOWNLOADING, DownloadState.PAUSED):
+            return
+        self.download_state = DownloadState.STOPPED
+        self.stop_flag.set()
+        self.url_queue.clear()
+        for w in self.workers:
+            w.stop()
+        self.append_output("Stopping all downloads...\n", 'info')
+        self.update_ui_state()
+
+    def download_finished(self):
+        self.append_output("\n✅ All downloads completed.\n", 'info')
+        self.notify_finished()
+        self.reset_to_idle()
+        QMessageBox.information(self, "Complete", "All files downloaded.")
+
+    def reset_to_idle(self):
+        self.download_state = DownloadState.IDLE
+        self.stop_flag.clear()
+        self.workers.clear()
+        self.active_workers = 0
+        self.url_queue.clear()
+        self.update_ui_state()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Ready")
+
+    def update_progress(self, files_downloaded):
+        self.current_files = files_downloaded
+        if self.download_state == DownloadState.DOWNLOADING:
+            self.progress_label.setText(f"Downloading... {self.current_files} files")
+        elif self.download_state == DownloadState.PAUSED:
+            self.progress_label.setText(f"Paused ({self.current_files} files)")
 
     def show_error(self, msg):
         QMessageBox.critical(self, "Error", msg)
-        self.download_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.clear_output_btn.setEnabled(True)
-        self.progress_label.setText("❌ Error")
-        self.progress_bar.setVisible(False)
+        self.reset_to_idle()
 
 
+# ---------- Main ----------
 if __name__ == "__main__":
     if sys.platform == 'win32':
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EroMeDownloader.RJ.1.0.6")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EroMeDownloader.RJ.1.0.7")
         except:
             pass
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # Splash screen
     splash_pix = QPixmap()
     base_path = os.path.dirname(os.path.abspath(__file__))
     splash_path = os.path.join(base_path, "assets", "splash.png")
@@ -834,7 +1471,6 @@ if __name__ == "__main__":
     splash.show()
     app.processEvents()
 
-    # Application icon
     icon_path = os.path.join(base_path, "assets", "icon.png")
     if os.path.exists(icon_path):
         icon = QIcon(icon_path)
