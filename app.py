@@ -12,6 +12,7 @@ from datetime import datetime
 import urllib.request
 import urllib.error
 from html.parser import HTMLParser
+from urllib.parse import urlparse
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -21,8 +22,11 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem, QHeaderView, QLineEdit as QLineEditSearch,
     QSystemTrayIcon, QMenu, QStyle, QDialogButtonBox
 )
-from PyQt5.QtCore import pyqtSignal, QObject, Qt, QSettings, QRect, QPoint
-from PyQt5.QtGui import QFont, QPalette, QColor, QIcon, QPixmap, QPainter, QTextCursor, QTextCharFormat, QPen, QBrush
+from PyQt5.QtCore import pyqtSignal, QObject, Qt, QSettings, QRect, QPoint, QTimer
+from PyQt5.QtGui import (
+    QFont, QPalette, QColor, QIcon, QPixmap, QPainter, QTextCursor,
+    QTextCharFormat, QPen, QBrush, QLinearGradient
+)
 
 
 # ---------- Helper Functions ----------
@@ -54,20 +58,15 @@ def get_python_command():
 
 
 def gear_icon(size=24):
-    """Create a gear icon using QPainter (no emoji)."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-
     painter.setPen(QPen(Qt.white, 2))
     painter.setBrush(QBrush(Qt.white))
-
     center = QPoint(size // 2, size // 2)
     radius = size // 2 - 4
     painter.drawEllipse(center, radius, radius)
-
-    # Draw teeth
     for angle in range(0, 360, 30):
         painter.save()
         painter.translate(center)
@@ -75,13 +74,11 @@ def gear_icon(size=24):
         rect = QRect(-3, -radius + 2, 6, 6)
         painter.drawRect(rect)
         painter.restore()
-
     painter.end()
     return QIcon(pixmap)
 
 
 def fetch_page_title(url, timeout=5):
-    """Fetch the title of a webpage from its <title> tag."""
     class TitleParser(HTMLParser):
         def __init__(self):
             super().__init__()
@@ -117,6 +114,25 @@ def fetch_page_title(url, timeout=5):
         return url.rstrip('/').split('/')[-1] or url
 
 
+# ========== URL NORMALISATION ==========
+def normalize_url(url: str) -> str:
+    url = url.strip()
+    if not url:
+        return None
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        return None
+    host = parsed.netloc.lower()
+    if host.endswith('.erome.com') or host == 'erome.com':
+        host = 'erome.com'
+    normalized = f"{parsed.scheme}://{host}{parsed.path}"
+    if normalized.endswith('/'):
+        normalized = normalized[:-1]
+    return normalized
+
+
 # ---------- Settings Dialog ----------
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -130,7 +146,6 @@ class SettingsDialog(QDialog):
     def setup_ui(self):
         layout = QVBoxLayout(self)
 
-        # Media type group
         media_group = QGroupBox("Media Type")
         media_layout = QVBoxLayout()
         self.checkbox_images = QCheckBox("Images only")
@@ -142,17 +157,14 @@ class SettingsDialog(QDialog):
         media_group.setLayout(media_layout)
         layout.addWidget(media_group)
 
-        # Debug mode
         self.debug_checkbox = QCheckBox("Debug Mode")
         self.debug_checkbox.setIcon(self.style().standardIcon(QStyle.SP_DialogHelpButton))
         layout.addWidget(self.debug_checkbox)
 
-        # Skip existing files
         self.skip_checkbox = QCheckBox("Skip existing files")
         self.skip_checkbox.setIcon(self.style().standardIcon(QStyle.SP_ArrowForward))
         layout.addWidget(self.skip_checkbox)
 
-        # Log level
         log_layout = QHBoxLayout()
         log_icon = self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
         log_icon_label = QLabel()
@@ -165,7 +177,6 @@ class SettingsDialog(QDialog):
         log_layout.addStretch()
         layout.addLayout(log_layout)
 
-        # Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
@@ -284,7 +295,7 @@ class GalleryDLWorker(threading.Thread):
                  debug=False, num_threads=4, skip_existing=False, resumed=False):
         super().__init__()
         self.urls = urls
-        self.url = urls[0]  # single URL for this worker
+        self.url = urls[0]
         self.directory = directory
         self.signals = signals
         self.stop_flag = stop_flag
@@ -299,11 +310,13 @@ class GalleryDLWorker(threading.Thread):
         self.num_threads = num_threads
         self.skip_existing = skip_existing
         self._skip_folder_printed = False
-        self.resumed = resumed  # if True, don't print "Processing: URL"
+        self.resumed = resumed
 
     def create_config(self, url, skip_existing=False):
         config = {}
-        if "erome.com" in url.lower():
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        if host.endswith('erome.com') or host == 'erome.com':
             config["extractor"] = {"erome": {"directory": ["{title}"]}}
         if skip_existing:
             config["downloader"] = {"skip": True}
@@ -340,7 +353,6 @@ class GalleryDLWorker(threading.Thread):
                 if self._stop_requested or self.stop_flag.is_set():
                     break
 
-                # Only print "Processing" if this is a fresh start, not a resume
                 if not self.resumed:
                     self.signals.output.emit(f"\n📥 Processing: {url}\n", 'info')
                 self._skip_folder_printed = False
@@ -420,14 +432,10 @@ class GalleryDLWorker(threading.Thread):
                     finally:
                         self.process = None
 
-            # If we completed without being stopped, mark as completed
             if not self._stop_requested and not self.stop_flag.is_set():
                 self.completed = True
 
-            if self._stop_requested or self.stop_flag.is_set():
-                # Don't emit "Download stopped by user" here; let the main logic handle it
-                pass
-            else:
+            if not (self._stop_requested or self.stop_flag.is_set()):
                 self.signals.output.emit("\n✅ URL finished.\n", 'info')
 
         except Exception as e:
@@ -660,8 +668,6 @@ class GalleryDLGUI(QMainWindow):
 
         self.log_entries = []
         self.current_files = 0
-
-        # Flag to avoid printing folder messages more than once per session
         self._folder_message_done = False
 
         self.load_history()
@@ -672,7 +678,6 @@ class GalleryDLGUI(QMainWindow):
 
         default_dir = get_default_downloads_folder()
         erome_dir = os.path.join(default_dir, "Erome")
-        # Only print folder message if not shown yet in this session
         if not self._folder_message_done:
             if os.path.exists(erome_dir):
                 self.append_output(f"ℹ️ Erome folder already exists at: {erome_dir}\n", 'info')
@@ -681,7 +686,6 @@ class GalleryDLGUI(QMainWindow):
                 self.append_output(f"✅ Created Erome folder at: {erome_dir}\n", 'info')
             self._folder_message_done = True
         else:
-            # Ensure folder exists even if we skip the message
             os.makedirs(erome_dir, exist_ok=True)
 
         self.download_dir = erome_dir
@@ -742,7 +746,6 @@ class GalleryDLGUI(QMainWindow):
         left_layout.setSpacing(15)
         left_layout.setContentsMargins(15, 15, 15, 15)
 
-        # URL group
         url_group = QGroupBox("URLs (one per line)")
         url_group.setToolTip("Enter one URL per line. Duplicates will be removed automatically.")
         url_layout = QVBoxLayout()
@@ -756,7 +759,6 @@ class GalleryDLGUI(QMainWindow):
         url_group.setLayout(url_layout)
         left_layout.addWidget(url_group)
 
-        # Directory
         dir_group = QGroupBox("Download Directory")
         dir_group.setToolTip("Folder where downloaded files will be saved.")
         dir_layout = QVBoxLayout()
@@ -780,7 +782,6 @@ class GalleryDLGUI(QMainWindow):
         dir_group.setLayout(dir_layout)
         left_layout.addWidget(dir_group)
 
-        # Progress
         progress_group = QGroupBox("Progress")
         progress_group.setToolTip("Shows download progress (number of files downloaded).")
         progress_layout = QVBoxLayout()
@@ -797,7 +798,6 @@ class GalleryDLGUI(QMainWindow):
         progress_group.setLayout(progress_layout)
         left_layout.addWidget(progress_group)
 
-        # Control buttons
         control_group = QGroupBox("Controls")
         control_layout = QHBoxLayout()
         self.start_btn = QPushButton("Start")
@@ -823,7 +823,6 @@ class GalleryDLGUI(QMainWindow):
         control_group.setLayout(control_layout)
         left_layout.addWidget(control_group)
 
-        # Extra buttons
         extra_layout = QHBoxLayout()
         self.clear_output_btn = QPushButton("Clear Log")
         self.clear_output_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
@@ -844,16 +843,14 @@ class GalleryDLGUI(QMainWindow):
         left_layout.addLayout(extra_layout)
         left_layout.addStretch()
 
-        # Settings button at bottom left – custom icon with fallback
         bottom_layout = QHBoxLayout()
         self.settings_btn = QPushButton()
-        # Try to load custom settings icon from assets/setico.png
         base_path = os.path.dirname(os.path.abspath(__file__))
         settings_icon_path = os.path.join(base_path, "assets", "setico.png")
         if os.path.exists(settings_icon_path):
             self.settings_btn.setIcon(QIcon(settings_icon_path))
         else:
-            self.settings_btn.setIcon(gear_icon())  # fallback
+            self.settings_btn.setIcon(gear_icon())
         self.settings_btn.setToolTip("Open settings dialog")
         self.settings_btn.clicked.connect(self.show_settings)
         self.settings_btn.setCursor(Qt.PointingHandCursor)
@@ -863,7 +860,6 @@ class GalleryDLGUI(QMainWindow):
         bottom_layout.addStretch()
         left_layout.addLayout(bottom_layout)
 
-        # Right panel: log
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(10, 15, 15, 15)
@@ -892,7 +888,6 @@ class GalleryDLGUI(QMainWindow):
         self.update_ui_state()
         self.on_log_level_changed()
 
-    # ---------- Getters ----------
     def get_media_type(self):
         return self.media_type
 
@@ -1049,7 +1044,6 @@ class GalleryDLGUI(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select Download Directory")
         if folder:
             erome_dir = os.path.join(folder, "Erome")
-            # Always show folder message when user explicitly selects a new directory
             if os.path.exists(erome_dir):
                 self.append_output(f"ℹ️ Erome folder already exists at: {erome_dir}\n", 'info')
             else:
@@ -1070,7 +1064,15 @@ class GalleryDLGUI(QMainWindow):
 
     def get_urls(self):
         text = self.url_entry.toPlainText()
-        return [url.strip() for url in text.splitlines() if url.strip()]
+        raw_urls = [u.strip() for u in text.splitlines() if u.strip()]
+        normalized = []
+        for u in raw_urls:
+            norm = normalize_url(u)
+            if norm:
+                normalized.append(norm)
+            else:
+                self.append_output(f"⚠️ Invalid URL skipped: {u}\n", 'warning')
+        return normalized
 
     def set_urls_text(self, url):
         self.url_entry.setPlainText(url)
@@ -1080,11 +1082,12 @@ class GalleryDLGUI(QMainWindow):
         unique = []
         duplicates = []
         for url in urls:
-            if url in seen:
+            norm = normalize_url(url)
+            if norm in seen:
                 duplicates.append(url)
             else:
-                seen.add(url)
-                unique.append(url)
+                seen.add(norm)
+                unique.append(norm)
         if duplicates:
             dup_msg = f"⚠️ Removed {len(duplicates)} duplicate URL(s): " + ", ".join(duplicates)
             self.append_output(dup_msg + "\n", 'info')
@@ -1101,8 +1104,6 @@ class GalleryDLGUI(QMainWindow):
             return
 
         color = None
-
-        # Specific message color overrides
         if 'Stopping all downloads' in text:
             color = 'red'
         elif 'Pausing...' in text:
@@ -1200,20 +1201,17 @@ class GalleryDLGUI(QMainWindow):
             self.append_output("ℹ️ Icon file not found, cannot set custom icon.\n", 'info')
             return
 
-        # Check if desktop.ini already exists and points to the same icon
         ini_path = os.path.join(folder_path, 'desktop.ini')
         if os.path.exists(ini_path):
             try:
                 with open(ini_path, 'r') as f:
                     content = f.read()
-                # Look for IconResource line
                 if f'IconResource={os.path.abspath(icon_path)},0' in content:
                     self.append_output(f"ℹ️ Folder icon already set for: {folder_path}\n", 'info')
                     return
             except:
                 pass
 
-        # If not set or different, set it
         try:
             import ctypes
             from ctypes import wintypes
@@ -1320,15 +1318,13 @@ class GalleryDLGUI(QMainWindow):
         debug = self.get_debug_mode()
         skip = self.get_skip_existing()
 
-        # Flag to indicate we are starting fresh (not resuming)
         self._is_resuming = False
 
         def worker_finished(worker):
             self.active_workers -= 1
             self.completed_workers += 1
-            # If worker was stopped by user and not completed, re-add its URL to the queue
             if worker.stopped_by_user and not worker.completed:
-                self.url_queue.insert(0, worker.url)  # put it back at the front
+                self.url_queue.insert(0, worker.url)
                 self.append_output(f"↩️ Re-queued URL due to pause: {worker.url}\n", 'info')
 
             if self.download_state == DownloadState.DOWNLOADING and not self.stop_flag.is_set():
@@ -1355,7 +1351,6 @@ class GalleryDLGUI(QMainWindow):
                 self.stop_flag, media_type, debug,
                 num_threads, skip, resumed=resumed
             )
-            # Connect finished signal with the worker instance
             worker.signals.finished.connect(lambda w=worker: worker_finished(w))
             worker.start()
             self.workers.append(worker)
@@ -1379,13 +1374,11 @@ class GalleryDLGUI(QMainWindow):
         self.stop_flag.clear()
         self.update_ui_state()
 
-        # Set resuming flag so workers know they are resumed
         self._is_resuming = True
 
         parallel_limit = 10
         initial_count = min(parallel_limit, len(self.url_queue))
         for _ in range(initial_count):
-            # Pass resumed=True so workers don't print "Processing: URL"
             self._start_next_worker(resumed=True)
 
     def pause_download(self):
@@ -1437,6 +1430,93 @@ class GalleryDLGUI(QMainWindow):
         self.reset_to_idle()
 
 
+# ========== SPLASH SCREEN WITH splash.png ==========
+def create_splash_pixmap():
+    """Create a splash screen using splash.png as background (native resolution),
+    with progress bar overlay."""
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    splash_path = os.path.join(base_path, "assets", "splash.png")
+
+    # Determine splash size: use image size if exists, else fallback 600x400
+    if os.path.exists(splash_path):
+        bg = QPixmap(splash_path)
+        width, height = bg.width(), bg.height()
+    else:
+        width, height = 600, 400
+        bg = None
+
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    if bg is not None:
+        # Draw at native resolution (no scaling)
+        painter.drawPixmap(0, 0, bg)
+    else:
+        # Fallback gradient
+        gradient = QLinearGradient(0, 0, 0, height)
+        gradient.setColorAt(0, QColor(30, 30, 30))
+        gradient.setColorAt(1, QColor(10, 10, 10))
+        painter.fillRect(0, 0, width, height, gradient)
+
+    # Subtle border
+    painter.setPen(QPen(QColor(60, 60, 60), 1))
+    painter.drawRect(0, 0, width-1, height-1)
+
+    # Progress bar dimensions relative to image size
+    bar_w = int(width * 0.7)          # 70% of width
+    bar_h = 24
+    bar_x = (width - bar_w) // 2
+    bar_y = height - 130              # 130px from bottom <------------
+
+    # Draw empty bar background
+    painter.setPen(QPen(QColor(60, 60, 60), 1))
+    painter.setBrush(QBrush(QColor(40, 40, 40)))
+    painter.drawRoundedRect(bar_x, bar_y, bar_w, bar_h, 4, 4)
+
+    painter.end()
+
+    splash_data = {
+        'pixmap': pixmap,
+        'bar_rect': QRect(bar_x, bar_y, bar_w, bar_h),
+        'status_rect': QRect(0, height - 100, width, 25),   # status text area <------------
+        'progress': 0
+    }
+    return splash_data
+
+def update_splash(splash, splash_data, progress, status_text):
+    """Update the splash pixmap with progress and status, then repaint."""
+    pixmap = splash_data['pixmap']
+    bar_rect = splash_data['bar_rect']
+    status_rect = splash_data['status_rect']
+
+    # Copy original pixmap (the background image is already painted)
+    new_pix = pixmap.copy()
+    painter = QPainter(new_pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # Update progress bar fill
+    fill_width = int(bar_rect.width() * (progress / 100.0))
+    if fill_width > 0:
+        gradient = QLinearGradient(bar_rect.x(), 0, bar_rect.x() + bar_rect.width(), 0)
+        gradient.setColorAt(0, QColor(239, 108, 0))
+        gradient.setColorAt(1, QColor(255, 171, 0))
+        painter.setBrush(QBrush(gradient))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(bar_rect.x(), bar_rect.y(), fill_width, bar_rect.height(), 4, 4)
+
+    # Update status text
+    painter.setPen(QColor(200, 200, 200))
+    painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+    painter.drawText(status_rect, Qt.AlignCenter, status_text)
+
+    painter.end()
+
+    splash.setPixmap(new_pix)
+    splash.show()
+
+
 # ---------- Main ----------
 if __name__ == "__main__":
     if sys.platform == 'win32':
@@ -1449,40 +1529,81 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    splash_pix = QPixmap()
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    splash_path = os.path.join(base_path, "assets", "splash.png")
-    if os.path.exists(splash_path):
-        splash_pix.load(splash_path)
-    else:
-        icon_path = os.path.join(base_path, "assets", "icon.png")
-        if os.path.exists(icon_path):
-            splash_pix.load(icon_path)
-        else:
-            splash_pix = QPixmap(400, 200)
-            splash_pix.fill(QColor(13, 13, 13))
-            painter = QPainter(splash_pix)
-            painter.setPen(QColor(245, 124, 0))
-            painter.setFont(QFont("Arial", 16))
-            painter.drawText(splash_pix.rect(), Qt.AlignCenter, "EroMe Downloader\nLoading...")
-            painter.end()
-
-    splash = QSplashScreen(splash_pix)
+    # Create splash
+    splash_data = create_splash_pixmap()
+    splash = QSplashScreen(splash_data['pixmap'])
     splash.show()
     app.processEvents()
 
-    icon_path = os.path.join(base_path, "assets", "icon.png")
-    if os.path.exists(icon_path):
-        icon = QIcon(icon_path)
-    else:
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(Qt.red)
-        icon = QIcon(pixmap)
+    # Loading steps (milestones for status text only)
+    load_steps = [
+        (10, "Loading secure core modules..."),
+        (20, "Initializing high-performance UI..."),
+        (30, "Loading optimized user configurations..."),
+        (40, "Validating network security protocols..."),
+        (50, "Performing full dependency integrity check..."),
+        (60, "Activating multi-threaded download engine..."),
+        (70, "Establishing secure API handshake..."),
+        (80, "Allocating high-speed disk buffers..."),
+        (90, "Warming up concurrent download queues..."),
+        (100, "Downloader is Ready!")
+    ]
 
-    app.setWindowIcon(icon)
-    window = GalleryDLGUI()
-    window.setWindowIcon(icon)
+    # This list will keep a reference to the main window so it doesn't get garbage-collected
+    window_holder = []
 
-    splash.finish(window)
-    window.show()
+    def show_main_window():
+        """Create and show the main window, finishing the splash."""
+        try:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+            icon_path = os.path.join(base_path, "assets", "icon.png")
+            if os.path.exists(icon_path):
+                icon = QIcon(icon_path)
+            else:
+                pixmap = QPixmap(16, 16)
+                pixmap.fill(Qt.red)
+                icon = QIcon(pixmap)
+            app.setWindowIcon(icon)
+
+            window = GalleryDLGUI()
+            window.setWindowIcon(icon)
+            window_holder.append(window)  # Keep alive
+
+            splash.finish(window)
+            window.show()
+        except Exception as e:
+            QMessageBox.critical(None, "Error", f"Failed to start application:\n{e}")
+            sys.exit(1)
+
+    # Smooth progress update
+    progress = [0]          # mutable counter
+    total_steps = 100
+    interval_ms = 100        # update every 100ms → total 10 seconds
+
+    def get_status_text(prog):
+        """Return the status text for the last milestone reached."""
+        text = load_steps[0][1]   # fallback
+        for milestone, msg in reversed(load_steps):
+            if prog >= milestone:
+                text = msg
+                break
+        return text
+
+    timer = QTimer()
+
+    def advance():
+        progress[0] += 1
+        if progress[0] > total_steps:
+            timer.stop()
+            show_main_window()
+            return
+        status = get_status_text(progress[0])
+        update_splash(splash, splash_data, progress[0], status)
+
+    timer.timeout.connect(advance)
+    timer.start(interval_ms)
+
+    # Set initial status
+    update_splash(splash, splash_data, 0, load_steps[0][1])
+
     sys.exit(app.exec_())
